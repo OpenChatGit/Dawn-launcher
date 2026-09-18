@@ -1,0 +1,107 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-python
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target host --target app_logic
+
+      - name: Package
+        run: bash scripts/package-ci.sh windows
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dawn-windows-x64
+          path: dist/Dawn-windows-x64.zip
+          if-no-files-found: error
+
+  linux:
+    name: Linux
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build g++ pkg-config \
+            libx11-dev libcurl4-openssl-dev python3
+
+      - name: Build
+        run: |
+          cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-linux --target host --target app_logic
+
+      - name: Package
+        run: bash scripts/package-ci.sh linux
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dawn-linux-x64
+          path: dist/Dawn-linux-x64.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dawn-windows-x64
+          path: release-assets
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dawn-linux-x64
+          path: release-assets
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || 'Latest build' }}
+          files: release-assets/*
+          generate_release_notes: ${{ github.ref_type == 'tag' }}
+          draft: false
+          prerelease: ${{ github.ref_type != 'tag' }}
+          make_latest: ${{ github.ref_type == 'tag' }}

@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+set -e
+DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+if [ -x "$DIR/linux/Dawn" ]; then
+    exec "$DIR/linux/Dawn" "$@"
+fi
+if command -v wine >/dev/null 2>&1 && [ -f "$DIR/Dawn.exe" ]; then
+    exec wine "$DIR/Dawn.exe" "$@"
+fi
+echo "This package has no native Linux launcher. Build host on Linux or install Wine."
+exit 1
