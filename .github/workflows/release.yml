@@ -13,9 +13,40 @@ permissions:
   contents: write
 
 jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.set.outputs.version }}
+      title: ${{ steps.set.outputs.title }}
+      kind: ${{ steps.set.outputs.kind }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: set
+        run: |
+          base=$(tr -d ' \t\r\n' < VERSION)
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            ver="${{ github.ref_name }}"
+            ver="${ver#v}"
+            kind=official
+          else
+            ver="${base}-dev.${{ github.run_number }}"
+            kind=latest
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "title=Dawn $ver" >> "$GITHUB_OUTPUT"
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+          echo "Launcher version: $ver ($kind)"
+
   windows:
     name: Windows
+    needs: version
     runs-on: windows-latest
+    env:
+      APP_VERSION: ${{ needs.version.outputs.version }}
     defaults:
       run:
         shell: msys2 {0}
@@ -36,7 +67,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAPP_VERSION="$APP_VERSION"
           cmake --build build --target host --target app_logic
 
       - name: Package
@@ -51,7 +82,10 @@ jobs:
 
   linux:
     name: Linux
+    needs: version
     runs-on: ubuntu-22.04
+    env:
+      APP_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -65,7 +99,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DAPP_VERSION="$APP_VERSION"
           cmake --build build-linux --target host --target app_logic
 
       - name: Package
@@ -80,9 +114,17 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: [windows, linux]
+    needs: [version, windows, linux]
     runs-on: ubuntu-latest
+    env:
+      APP_VERSION: ${{ needs.version.outputs.version }}
+      RELEASE_KIND: ${{ needs.version.outputs.kind }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 20
+
       - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
@@ -95,13 +137,18 @@ jobs:
           name: dawn-linux-x64
           path: release-assets
 
+      - name: Write release notes
+        run: bash scripts/release-notes.sh "$APP_VERSION" "$RELEASE_KIND" release-notes.md
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
-          name: ${{ github.ref_type == 'tag' && github.ref_name || 'Latest build' }}
+          name: ${{ needs.version.outputs.title }}
+          body_path: release-notes.md
           files: release-assets/*
-          generate_release_notes: ${{ github.ref_type == 'tag' }}
+          generate_release_notes: ${{ needs.version.outputs.kind == 'official' }}
           draft: false
-          prerelease: ${{ github.ref_type != 'tag' }}
-          make_latest: ${{ github.ref_type == 'tag' }}
+          prerelease: ${{ needs.version.outputs.kind != 'official' }}
+          make_latest: ${{ needs.version.outputs.kind == 'official' }}
+          fail_on_unmatched_files: true

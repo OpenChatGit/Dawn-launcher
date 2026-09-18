@@ -76,6 +76,14 @@ if [ ! -f "$STAGE/tools/DepotDownloader/$DD_NAME" ]; then
     exit 1
 fi
 
+VERSION="${APP_VERSION:-}"
+if [ -z "$VERSION" ] && [ -f "$ROOT/VERSION" ]; then
+    VERSION="$(tr -d ' \t\r\n' < "$ROOT/VERSION")"
+fi
+if [ -n "$VERSION" ]; then
+    printf '%s\n' "$VERSION" > "$STAGE/VERSION"
+fi
+
 chmod +x "$STAGE/$LAUNCHER_NAME" "$STAGE/tools/DepotDownloader/$DD_NAME" || true
 
 rm -f "$ARCHIVE"

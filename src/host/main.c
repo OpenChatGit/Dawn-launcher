@@ -51,6 +51,7 @@ WinMain(HINSTANCE instance, HINSTANCE prev, LPSTR cmd, int show)
 
     FreeConsole();
     debug_console_init();
+    debug_log("Dawn %s", APP_VERSION);
     builder_prepare_path();
 
     HostWindow window;
@@ -77,6 +78,7 @@ int
 main(void)
 {
     debug_console_init();
+    debug_log("Dawn %s", APP_VERSION);
     builder_prepare_path();
 
     HostWindow window;
