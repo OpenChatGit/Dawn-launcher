@@ -53,6 +53,7 @@ int os_copy_file(const char *from, const char *to);
 int os_delete_file(const char *path);
 uint64_t os_file_mtime(const char *path);
 void os_data_dir(char *out, size_t max);
+int os_exe_dir(char *out, size_t max);
 int os_app_root(char *out, size_t max, const char *fallback);
 int os_utf8_to_wide(const char *utf8, wchar_t *out, int max);
 void os_open_url(const char *url);

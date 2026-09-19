@@ -3,7 +3,7 @@
 
 #include "shared/api.h"
 
-#define APP_STATE_MAGIC 0x41505035u
+#define APP_STATE_MAGIC 0x41505036u
 
 typedef struct AppState {
     uint32_t magic;
@@ -14,6 +14,7 @@ typedef struct AppState {
     char steam_user[64];
     char steam_id[32];
     char steam_avatar[260];
+    int login_prompted;
 } AppState;
 
 AppState *state_from_memory(AppMemory *memory);

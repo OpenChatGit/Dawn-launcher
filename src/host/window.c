@@ -24,6 +24,56 @@
 #endif
 
 static HostWindow *g_window;
+static int g_text_cursor;
+
+static void
+force_english_ui(void)
+{
+    SetThreadUILanguage(MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US));
+}
+
+static void
+append_window_text(HostWindow *window, const char *bytes, int n)
+{
+    int i;
+
+    if (!window || !bytes || n <= 0) {
+        return;
+    }
+    for (i = 0; i < n && window->text_len < (int)sizeof(window->text) - 1; i++) {
+        unsigned char ch = (unsigned char)bytes[i];
+        if (ch < 32 || ch == 127) {
+            continue;
+        }
+        window->text[window->text_len++] = (char)ch;
+    }
+    window->text[window->text_len] = '\0';
+}
+
+static void
+paste_clipboard(HostWindow *window)
+{
+    HANDLE handle;
+    const wchar_t *wide;
+    char utf8[256];
+    int n;
+
+    if (!window || !OpenClipboard(window->hwnd)) {
+        return;
+    }
+    handle = GetClipboardData(CF_UNICODETEXT);
+    if (handle) {
+        wide = (const wchar_t *)GlobalLock(handle);
+        if (wide) {
+            n = WideCharToMultiByte(CP_UTF8, 0, wide, -1, utf8, (int)sizeof(utf8), NULL, NULL);
+            if (n > 1) {
+                append_window_text(window, utf8, n - 1);
+            }
+            GlobalUnlock(handle);
+        }
+    }
+    CloseClipboard();
+}
 
 #ifndef DWMWA_WINDOW_CORNER_PREFERENCE
 #define DWMWA_WINDOW_CORNER_PREFERENCE 33
@@ -274,15 +324,30 @@ window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
             ReleaseCapture();
         }
         return 0;
+    case WM_MOUSEWHEEL:
+        if (window) {
+            window->mouse_wheel += GET_WHEEL_DELTA_WPARAM(wparam) / WHEEL_DELTA;
+        }
+        return 0;
+    case WM_GETDLGCODE:
+        return DLGC_WANTALLKEYS | DLGC_WANTCHARS;
+    case WM_SETCURSOR:
+        if (g_text_cursor && LOWORD(lparam) == HTCLIENT) {
+            SetCursor(LoadCursorA(NULL, IDC_IBEAM));
+            return TRUE;
+        }
+        return DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_CHAR:
+        /* Plain Ctrl shortcuts are handled on KEYDOWN. AltGr is Ctrl+Alt and must still type. */
+        if ((GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000)) {
+            return 0;
+        }
         if (window && wparam >= 32 && window->text_len < (int)sizeof(window->text) - 1) {
             wchar_t wc = (wchar_t)wparam;
             char utf8[8];
             int n = WideCharToMultiByte(CP_UTF8, 0, &wc, 1, utf8, (int)sizeof(utf8), NULL, NULL);
-            if (n > 0 && window->text_len + n < (int)sizeof(window->text)) {
-                memcpy(window->text + window->text_len, utf8, (size_t)n);
-                window->text_len += n;
-                window->text[window->text_len] = '\0';
+            if (n > 0) {
+                append_window_text(window, utf8, n);
             }
             return 0;
         }
@@ -291,6 +356,13 @@ window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
     case WM_SYSKEYDOWN:
         if (wparam == VK_F12) {
             debug_console_toggle();
+            return 0;
+        }
+        if (window &&
+            (GetKeyState(VK_CONTROL) & 0x8000) &&
+            !(GetKeyState(VK_MENU) & 0x8000) &&
+            (wparam == 'V' || wparam == 'v')) {
+            paste_clipboard(window);
             return 0;
         }
         if (window) {
@@ -655,6 +727,7 @@ window_create(HostWindow *window, const char *title, int width, int height)
     memset(window, 0, sizeof(*window));
     g_window = window;
     window->running = 1;
+    force_english_ui();
     enable_dpi_awareness();
     window->dpi_scale = system_dpi_scale();
     if (window->dpi_scale < 0.75f) {
@@ -770,19 +843,47 @@ window_end_frame_input(HostWindow *window)
 {
     window->mouse_pressed = 0;
     window->mouse_released = 0;
+    window->mouse_wheel = 0;
     window->text_len = 0;
     window->text[0] = '\0';
     window->key = PLATFORM_KEY_NONE;
 }
 
-void
+int
+window_minimized(const HostWindow *window)
+{
+    return window && window->hwnd && IsIconic(window->hwnd);
+}
+
+int
+window_focused(const HostWindow *window)
+{
+    HWND fg;
+    DWORD pid = 0;
+
+    if (!window || !window->hwnd) {
+        return 0;
+    }
+    fg = GetForegroundWindow();
+    if (!fg) {
+        return 0;
+    }
+    if (fg == window->hwnd) {
+        return 1;
+    }
+    /* Our own popups (folder picker, message boxes) count as focused. */
+    GetWindowThreadProcessId(fg, &pid);
+    return pid == GetCurrentProcessId();
+}
+
+int
 window_present(HostWindow *window)
 {
     if (!window || !window->hwnd || !window->back_dc) {
-        return;
+        return 0;
     }
     if (IsIconic(window->hwnd)) {
-        return;
+        return 0;
     }
     if (!window->shown) {
         ShowWindow(window->hwnd, SW_SHOW);
@@ -793,6 +894,7 @@ window_present(HostWindow *window)
         BitBlt(hdc, 0, 0, window->width, window->height, window->back_dc, 0, 0, SRCCOPY);
         ReleaseDC(window->hwnd, hdc);
     }
+    return SUCCEEDED(DwmFlush());
 }
 
 static int
@@ -810,6 +912,7 @@ platform_pick_folder(char *out, int max)
         return 0;
     }
     out[0] = '\0';
+    force_english_ui();
     com = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     hr = CoCreateInstance(
         &CLSID_FileOpenDialog,
@@ -857,6 +960,27 @@ platform_pick_folder(char *out, int max)
 }
 
 void
+window_keep_key_focus(HostWindow *window)
+{
+    if (!window || !window->hwnd) {
+        return;
+    }
+    if (GetForegroundWindow() != window->hwnd) {
+        return;
+    }
+    if (GetFocus() != window->hwnd) {
+        SetFocus(window->hwnd);
+    }
+}
+
+void
+window_apply_cursor(HostWindow *window, int text)
+{
+    (void)window;
+    g_text_cursor = text ? 1 : 0;
+}
+
+void
 window_bind_platform(HostWindow *window, Platform *platform, const char *project_root)
 {
     memset(platform, 0, sizeof(*platform));
@@ -874,6 +998,7 @@ window_bind_platform(HostWindow *window, Platform *platform, const char *project
     platform->mouse_down = window->mouse_down;
     platform->mouse_pressed = window->mouse_pressed;
     platform->mouse_released = window->mouse_released;
+    platform->mouse_wheel = window->mouse_wheel;
     memcpy(platform->text, window->text, sizeof(platform->text));
     platform->text_len = window->text_len;
     platform->key = window->key;
@@ -927,7 +1052,14 @@ window_bind_platform(HostWindow *window, Platform *platform, const char *project
     platform->install_ready = install_job_ready;
     platform->install_launch = install_job_launch;
     platform->install_uninstall = install_job_uninstall;
+    platform->install_parts = install_job_parts;
+    platform->install_uninstall_part = install_job_uninstall_part;
     platform->install_verify = install_job_verify;
+    platform->game_state = install_job_game_state;
+    platform->game_stop = install_job_game_stop;
+    platform->install_set_language = install_job_set_language;
+    platform->install_language = install_job_language;
+    platform->install_language_label = install_job_language_label;
     platform->steam_sign_in = steam_auth_begin;
     platform->steam_sign_out = steam_auth_sign_out;
     platform->steam_cancel = steam_auth_cancel;
@@ -939,5 +1071,5 @@ window_bind_platform(HostWindow *window, Platform *platform, const char *project
     platform->steam_status = steam_auth_status;
     platform->steam_owns_d2 = steam_auth_owns_d2;
     platform->steam_owns_forsaken = steam_auth_owns_forsaken;
-    platform->steam_owns_red_war = steam_auth_owns_red_war;
+    platform->steam_owns_shadowkeep = steam_auth_owns_shadowkeep;
 }

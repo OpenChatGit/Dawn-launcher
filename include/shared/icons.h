@@ -117,6 +117,19 @@ void icon_draw_label_alpha(
     int weight,
     int alpha
 );
+void icon_draw_label_end_alpha(
+    void *hdc,
+    float x,
+    float y,
+    float w,
+    float h,
+    const wchar_t *text,
+    uint32_t rgb,
+    float px,
+    int weight,
+    int alpha
+);
+float icon_measure_label(void *hdc, const wchar_t *text, float px, int weight);
 
 void icon_draw_label_shimmer(
     void *hdc,

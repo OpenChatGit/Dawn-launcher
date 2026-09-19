@@ -925,14 +925,10 @@ draw_layer_arc(const ThemeLayer *layer, int width, int height, float time, float
         seg = 64;
     }
 
-    D2D1_POINT_2F *pts = (D2D1_POINT_2F *)malloc(sizeof(D2D1_POINT_2F) * (size_t)(seg + 1));
-    if (!pts) {
-        return;
-    }
+    D2D1_POINT_2F pts[65];
     make_arc_points(layer, cx, cy, radius, anim, pts, seg);
     ID2D1PathGeometry *stroke = make_line_geo(pts, seg + 1, 0, Point2F(cx, cy));
     ID2D1PathGeometry *cap = layer->cap ? make_line_geo(pts, seg + 1, 1, Point2F(cx, cy)) : NULL;
-    free(pts);
 
     if (cap) {
         fill_cap(g_dc, cap, cx, cy, radius * 1.15f, layer->cap_inner, layer->cap_outer);

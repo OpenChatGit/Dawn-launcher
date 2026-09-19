@@ -41,12 +41,26 @@ if [ ! -f "$HOST" ] || [ ! -f "$LOGIC" ]; then
     exit 1
 fi
 
+# The launcher must run on a machine without MSYS2/MinGW installed.
+if [ "$PLATFORM" = "windows" ] && command -v objdump >/dev/null 2>&1; then
+    for bin in "$HOST" "$LOGIC"; do
+        if objdump -p "$bin" | grep -qiE 'libstdc\+\+|libgcc_s|libwinpthread|zlib1\.dll'; then
+            echo "$bin still imports a MinGW runtime DLL; link statically" >&2
+            objdump -p "$bin" | grep -i 'DLL Name' >&2
+            exit 1
+        fi
+    done
+fi
+
 rm -rf "$STAGE"
-mkdir -p "$STAGE/tools/DepotDownloader" "$STAGE/themes"
+mkdir -p "$STAGE/tools/DepotDownloader" "$STAGE/tools/dawn-release" "$STAGE/themes" "$STAGE/assets"
 
 cp "$HOST" "$STAGE/$LAUNCHER_NAME"
 cp "$LOGIC" "$STAGE/"
 cp -R "$ROOT/themes/." "$STAGE/themes/"
+# Steam/emblem SVGs the UI module loads at runtime (assets/steam.svg etc.)
+cp -R "$ROOT/assets/." "$STAGE/assets/"
+find "$STAGE/assets" -name .gitkeep -delete
 
 if [ -f "$ROOT/packaging/Dawn" ] && [ "$PLATFORM" = "linux" ]; then
     cp "$ROOT/packaging/Dawn" "$STAGE/Dawn.sh"
@@ -73,6 +87,21 @@ fi
 
 if [ ! -f "$STAGE/tools/DepotDownloader/$DD_NAME" ]; then
     echo "DepotDownloader binary missing after extract" >&2
+    exit 1
+fi
+
+DAWN_BUNDLE_URL="https://github.com/isinternets/Dawn/releases/download/0.1.3/Dawn-0.1.3.zip"
+DAWN_BUNDLE_ZIP="$DIST/dawn-0.1.3.zip"
+curl -fsSL -L "$DAWN_BUNDLE_URL" -o "$DAWN_BUNDLE_ZIP"
+python - "$DAWN_BUNDLE_ZIP" "$STAGE/tools/dawn-release" <<'PY'
+import sys, zipfile
+zip_path, dest = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(zip_path) as zf:
+    zf.extractall(dest)
+PY
+rm -f "$DAWN_BUNDLE_ZIP"
+if ! find "$STAGE/tools/dawn-release" -name "steam_api64.dll" | grep -q .; then
+    echo "bundled Dawn payload missing steam_api64.dll" >&2
     exit 1
 fi
 

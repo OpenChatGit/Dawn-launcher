@@ -101,6 +101,7 @@ void
 login_modal_close(void)
 {
     g_open = 0;
+    g_anim = 0.0f;
     g_block_mouse = 0;
 }
 
@@ -141,8 +142,11 @@ login_modal_sync(AppState *state, Platform *platform)
                 snprintf(g_steam_id, sizeof(g_steam_id), "%s", platform->steam_id());
             }
             persist();
+            if (state) {
+                state->login_prompted = 1;
+            }
             if (g_open && platform->steam_busy && !platform->steam_busy()) {
-                login_modal_close();
+                login_modal_hide();
             }
             return;
         }
@@ -151,6 +155,13 @@ login_modal_sync(AppState *state, Platform *platform)
             g_user[0] = '\0';
             g_avatar[0] = '\0';
             persist();
+        }
+        if (state && !state->login_prompted) {
+            int busy = platform->steam_busy && platform->steam_busy();
+            if (!busy) {
+                state->login_prompted = 1;
+                login_modal_open();
+            }
         }
         return;
     }
@@ -202,7 +213,7 @@ login_modal_tick(Platform *platform, float dt)
     if (!platform) {
         return;
     }
-    g_anim = modal_approach(g_anim, g_open ? 1.0f : 0.0f, dt);
+    g_anim = g_open ? 1.0f : 0.0f;
     if (g_anim <= 0.0f) {
         return;
     }

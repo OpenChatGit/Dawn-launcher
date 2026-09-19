@@ -117,10 +117,28 @@ configure_file(
 
 target_include_directories(host PRIVATE ${CMAKE_BINARY_DIR}/generated)
 
+# zlib: needed to read DepotDownloader's deflate-compressed depot.config
+if(MINGW)
+    set(ZLIB_USE_STATIC_LIBS ON)
+    if(NOT ZLIB_ROOT)
+        get_filename_component(_mingw_prefix "${CMAKE_C_COMPILER}" DIRECTORY)
+        get_filename_component(_mingw_prefix "${_mingw_prefix}" DIRECTORY)
+        set(ZLIB_ROOT "${_mingw_prefix}")
+    endif()
+endif()
+find_package(ZLIB REQUIRED)
+target_link_libraries(host PRIVATE ZLIB::ZLIB)
+target_compile_definitions(host PRIVATE APP_HAVE_ZLIB)
+
 if(WIN32)
     target_link_libraries(host PRIVATE user32 gdi32 dwmapi ole32 uuid shell32 mfplat mfplay mfreadwrite d3d11 dxgi winhttp ws2_32 version)
     target_link_libraries(app_logic PRIVATE user32 gdi32 gdiplus msimg32 d2d1 d3d11 dxgi uuid ole32 shell32 m)
     set_target_properties(host PROPERTIES WIN32_EXECUTABLE TRUE)
+    if(MINGW)
+        # Ship self-contained binaries: no libstdc++-6.dll / libgcc_s_seh-1.dll / libwinpthread-1.dll
+        target_link_options(host PRIVATE -static -static-libgcc -static-libstdc++)
+        target_link_options(app_logic PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
 else()
     find_package(X11 REQUIRED)
     find_package(CURL)

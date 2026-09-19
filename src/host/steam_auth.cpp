@@ -169,8 +169,9 @@ http_run_curl(char *const argv[], const char *body_path, long *status_out)
 #define STEAM_DD_USER_MAX 64
 #define D2_APP 1085660u
 #define D2_FORSAKEN 1090150u
-#define D2_FORSAKEN_PASS 1090200u
+#define D2_SHADOWKEEP 1090200u
 #define D2_VERSION_FORSAKEN 8
+#define D2_VERSION_SHADOWKEEP 32
 #define D2_VERSION_Y2_PASS 16
 
 typedef enum SteamPhase {
@@ -192,10 +193,13 @@ static char g_name[STEAM_NAME_MAX];
 static char g_avatar[MAX_PATH];
 static char g_status[STEAM_STATUS_MAX];
 static char g_dd_user[STEAM_DD_USER_MAX];
+static uint32_t g_dd_resolve_ms;
 static int g_owns_known;
 static int g_owns_d2;
 static int g_owns_forsaken;
+static int g_owns_shadowkeep;
 static SteamPhase g_phase;
+static int g_fresh_login;
 static SOCKET g_listen = INVALID_SOCKET;
 static HANDLE g_thread;
 static volatile LONG g_cancel;
@@ -373,12 +377,13 @@ save_session(void)
     }
     fprintf(
         file,
-        "id=%s\nname=%s\navatar=%s\nowns_d2=%d\nowns_forsaken=%d\nowns_known=%d\ndd_user=%s\n",
+        "id=%s\nname=%s\navatar=%s\nowns_d2=%d\nowns_forsaken=%d\nowns_shadowkeep=%d\nowns_known=%d\ndd_user=%s\n",
         g_id,
         g_name,
         g_avatar,
         g_owns_d2,
         g_owns_forsaken,
+        g_owns_shadowkeep,
         g_owns_known,
         g_dd_user
     );
@@ -597,6 +602,8 @@ load_session(void)
             g_owns_d2 = atoi(line + 8);
         } else if (strncmp(line, "owns_forsaken=", 14) == 0) {
             g_owns_forsaken = atoi(line + 14);
+        } else if (strncmp(line, "owns_shadowkeep=", 16) == 0) {
+            g_owns_shadowkeep = atoi(line + 16);
         } else if (strncmp(line, "owns_known=", 11) == 0) {
             g_owns_known = atoi(line + 11);
         } else if (strncmp(line, "dd_user=", 8) == 0) {
@@ -1158,7 +1165,7 @@ verify_openid(const char *query)
 {
     char body[8192];
     if (!openid_check_body(query, body, (int)sizeof(body))) {
-        set_status("Steam login payload missing");
+        set_status("Login data missing");
         return 0;
     }
 
@@ -1210,7 +1217,7 @@ verify_openid(const char *query)
 
     debug_log("steam: verify failed http %lu body=%d", status, (int)strlen(response));
     if (status == 0) {
-        set_status("Could not reach Steam to confirm login");
+        set_status("Steam confirm failed");
     }
     return 0;
 }
@@ -1241,13 +1248,91 @@ prefer_full_avatar(char *url, int max)
     memcpy(dot, "_full", 5);
 }
 
+/* <tag><![CDATA[value]]></tag> or <tag>value</tag> from the public profile XML */
+static int
+xml_text(const char *xml, const char *tag, char *out, int max)
+{
+    char open[64];
+    char close[64];
+
+    out[0] = '\0';
+    snprintf(open, sizeof(open), "<%s>", tag);
+    snprintf(close, sizeof(close), "</%s>", tag);
+    const char *start = strstr(xml, open);
+    if (!start) {
+        return 0;
+    }
+    start += strlen(open);
+    const char *end = strstr(start, close);
+    if (!end) {
+        return 0;
+    }
+    if (strncmp(start, "<![CDATA[", 9) == 0) {
+        start += 9;
+        const char *cd = strstr(start, "]]>");
+        if (cd && cd < end) {
+            end = cd;
+        }
+    }
+    int n = (int)(end - start);
+    if (n <= 0) {
+        return 0;
+    }
+    if (n >= max) {
+        n = max - 1;
+    }
+    memcpy(out, start, (size_t)n);
+    out[n] = '\0';
+    return 1;
+}
+
+/*
+ * No-API-key path: the public community profile. Enough for persona name
+ * and avatar, which is all the launcher shows; ownership is enforced by
+ * DepotDownloader itself when the depots are requested.
+ */
+static int
+fetch_profile_public(const char *steamid, char *name, int name_max, char *avatar_url, int url_max)
+{
+    char path_utf8[128];
+    wchar_t path[128];
+    static char xml[65536];
+    DWORD status = 0;
+
+    snprintf(path_utf8, sizeof(path_utf8), "/profiles/%s/?xml=1", steamid);
+    MultiByteToWideChar(CP_UTF8, 0, path_utf8, -1, path, 128);
+    xml[0] = '\0';
+    int ok = http_exchange(
+        L"steamcommunity.com",
+        INTERNET_DEFAULT_HTTPS_PORT,
+        L"GET",
+        path,
+        NULL,
+        0,
+        NULL,
+        xml,
+        (int)sizeof(xml),
+        NULL,
+        &status
+    );
+    debug_log("steam: public profile http %lu ok=%d bytes=%d", status, ok, (int)strlen(xml));
+    if (!ok || !xml_text(xml, "steamID", name, name_max)) {
+        return 0;
+    }
+    if (!xml_text(xml, "avatarFull", avatar_url, url_max) &&
+        !xml_text(xml, "avatarMedium", avatar_url, url_max)) {
+        xml_text(xml, "avatarIcon", avatar_url, url_max);
+    }
+    return name[0] != '\0';
+}
+
 static int
 fetch_profile(const char *steamid, char *name, int name_max, char *avatar_url, int url_max)
 {
     char key[STEAM_KEY_MAX];
     copy_locked(key, (int)sizeof(key), g_key);
     if (!key[0]) {
-        return 0;
+        return fetch_profile_public(steamid, name, name_max, avatar_url, url_max);
     }
     char path_utf8[400];
     snprintf(
@@ -1287,17 +1372,17 @@ fetch_profile(const char *steamid, char *name, int name_max, char *avatar_url, i
     );
     if (!ok) {
         if (status == 403 || status == 401) {
-            set_status("Steam API key was rejected");
+            debug_log("steam: API key rejected, using public profile");
         }
-        return 0;
+        return fetch_profile_public(steamid, name, name_max, avatar_url, url_max);
     }
     if (strstr(json, "\"players\":[]") || strstr(json, "\"players\": []")) {
         debug_log("steam: profile returned no players");
-        return 0;
+        return fetch_profile_public(steamid, name, name_max, avatar_url, url_max);
     }
     if (!json_string(json, "personaname", name, name_max)) {
         debug_log("steam: profile missing personaname");
-        return 0;
+        return fetch_profile_public(steamid, name, name_max, avatar_url, url_max);
     }
     if (!json_string(json, "avatarfull", avatar_url, url_max) &&
         !json_string(json, "avatarmedium", avatar_url, url_max)) {
@@ -1409,10 +1494,12 @@ fetch_owned(const char *steamid)
     int steam_games = 0;
     int steam_d2 = 0;
     int steam_forsaken = 0;
+    int steam_shadowkeep = 0;
 
     g_owns_known = 0;
     g_owns_d2 = -1;
     g_owns_forsaken = -1;
+    g_owns_shadowkeep = -1;
 
     copy_locked(key, (int)sizeof(key), g_key);
     if (key[0] && steamid && steamid[0]) {
@@ -1425,7 +1512,7 @@ fetch_owned(const char *steamid)
             steamid,
             D2_APP,
             D2_FORSAKEN,
-            D2_FORSAKEN_PASS
+            D2_SHADOWKEEP
         );
         char enc[640];
         url_encode(json_in, enc, (int)sizeof(enc));
@@ -1462,8 +1549,8 @@ fetch_owned(const char *steamid)
             steam_games = strstr(json, "\"games\"") != NULL || strstr(json, "game_count") != NULL;
             if (steam_games) {
                 steam_d2 = json_has_appid(json, D2_APP);
-                steam_forsaken = json_has_appid(json, D2_FORSAKEN) ||
-                    json_has_appid(json, D2_FORSAKEN_PASS);
+                steam_forsaken = json_has_appid(json, D2_FORSAKEN);
+                steam_shadowkeep = json_has_appid(json, D2_SHADOWKEEP);
             } else {
                 debug_log("steam: game details hidden or empty");
             }
@@ -1477,6 +1564,9 @@ fetch_owned(const char *steamid)
         if (steam_forsaken) {
             g_owns_forsaken = 1;
         }
+        if (steam_shadowkeep) {
+            g_owns_shadowkeep = 1;
+        }
     }
 
     if (g_bungie_key[0] && steamid && steamid[0]) {
@@ -1488,17 +1578,27 @@ fetch_owned(const char *steamid)
             } else if (g_owns_forsaken != 1) {
                 g_owns_forsaken = 0;
             }
+            if ((versions & D2_VERSION_SHADOWKEEP) != 0) {
+                g_owns_shadowkeep = 1;
+            } else if (g_owns_shadowkeep != 1) {
+                g_owns_shadowkeep = 0;
+            }
             if ((versions & 1) != 0) {
                 g_owns_d2 = 1;
             }
-            debug_log("bungie: versionsOwned=%ld forsaken=%d", versions, g_owns_forsaken);
+            debug_log(
+                "bungie: versionsOwned=%ld forsaken=%d shadowkeep=%d",
+                versions,
+                g_owns_forsaken,
+                g_owns_shadowkeep
+            );
         } else {
             debug_log("bungie: expansion check failed");
         }
-    } else if (g_owns_forsaken < 0) {
-        debug_log("bungie: add BUNGIE_API_KEY to .env to verify Forsaken");
+    } else if (g_owns_forsaken < 0 || g_owns_shadowkeep < 0) {
+        debug_log("bungie: add BUNGIE_API_KEY to .env to verify DLC");
     }
-    debug_log("steam: d2=%d forsaken=%d (red war is base game)", g_owns_d2, g_owns_forsaken);
+    debug_log("steam: d2=%d forsaken=%d shadowkeep=%d", g_owns_d2, g_owns_forsaken, g_owns_shadowkeep);
 }
 
 static int
@@ -1754,7 +1854,7 @@ auth_thread(void *)
     char query[8192];
     if (!extract_callback_query(request, got, query, (int)sizeof(query))) {
         g_phase = STEAM_FAILED;
-        set_status("Steam did not return a login");
+        set_status("Steam login missing");
         return 0;
     }
     debug_log("steam: callback query %d bytes", (int)strlen(query));
@@ -1764,7 +1864,7 @@ auth_thread(void *)
     const char *mode = query_get(pairs, count, "openid.mode");
     if (mode && strcmp(mode, "cancel") == 0) {
         g_phase = STEAM_FAILED;
-        set_status("Steam sign in cancelled");
+        set_status("Sign-in cancelled");
         return 0;
     }
     const char *claimed = query_get(pairs, count, "openid.claimed_id");
@@ -1775,15 +1875,15 @@ auth_thread(void *)
     steamid[0] = '\0';
     if (!claimed || !extract_steamid(claimed, steamid, (int)sizeof(steamid))) {
         g_phase = STEAM_FAILED;
-        set_status("Steam account id missing");
+        set_status("Steam ID missing");
         debug_log("steam: claimed_id missing pairs=%d", count);
         return 0;
     }
     g_phase = STEAM_WORKING;
-    set_status("Confirming Steam login");
+    set_status("Confirming login");
     if (!verify_openid(query)) {
         g_phase = STEAM_FAILED;
-        set_status("Steam login was not valid");
+        set_status("Login invalid");
         return 0;
     }
 
@@ -1791,11 +1891,11 @@ auth_thread(void *)
     char avatar_url[512];
     name[0] = '\0';
     avatar_url[0] = '\0';
-    set_status("Loading Steam profile");
+    set_status("Loading profile");
     if (!fetch_profile(steamid, name, (int)sizeof(name), avatar_url, (int)sizeof(avatar_url))) {
         g_phase = STEAM_FAILED;
-        if (!g_status[0] || strcmp(g_status, "Loading Steam profile") == 0) {
-            set_status("Steam profile request failed");
+        if (!g_status[0] || strcmp(g_status, "Loading profile") == 0) {
+            set_status("Profile failed");
         }
         return 0;
     }
@@ -1804,11 +1904,11 @@ auth_thread(void *)
     session_paths(NULL, avatar_path, MAX_PATH);
     DeleteFileA(avatar_path);
     if (avatar_url[0]) {
-        set_status("Loading Steam avatar");
+        set_status("Loading avatar");
         download_avatar(avatar_url, avatar_path);
     }
 
-    set_status("Checking Destiny 2 licenses");
+    set_status("Checking licenses");
     fetch_owned(steamid);
 
     EnterCriticalSection(&g_lock);
@@ -1820,19 +1920,21 @@ auth_thread(void *)
         g_avatar[0] = '\0';
     }
     g_phase = STEAM_READY;
+    g_fresh_login = 1;
     LeaveCriticalSection(&g_lock);
     save_session();
     resolve_steam_account_name();
     if (g_avatar[0]) {
         set_status("Signed in");
     } else {
-        set_status("Signed in (avatar unavailable)");
+        set_status("Signed in");
     }
     debug_log(
-        "steam: ready persona ok avatar=%d d2=%d forsaken=%d",
+        "steam: ready persona ok avatar=%d d2=%d forsaken=%d shadowkeep=%d",
         g_avatar[0] != '\0',
         g_owns_d2,
-        g_owns_forsaken
+        g_owns_forsaken,
+        g_owns_shadowkeep
     );
     return 0;
 }
@@ -1860,6 +1962,7 @@ steam_auth_init(const char *project_root)
     snprintf(g_root, sizeof(g_root), "%s", project_root ? project_root : ".");
     g_owns_d2 = -1;
     g_owns_forsaken = -1;
+    g_owns_shadowkeep = -1;
     g_owns_known = 0;
     load_dd_user_file();
     load_key(g_root);
@@ -1910,11 +2013,6 @@ steam_auth_shutdown(void)
 int
 steam_auth_begin(void)
 {
-    if (!g_key[0]) {
-        set_status("Add STEAM_API_KEY to .env");
-        g_phase = STEAM_FAILED;
-        return 0;
-    }
     if (g_phase == STEAM_WAITING || g_phase == STEAM_WORKING) {
         return 1;
     }
@@ -1922,7 +2020,7 @@ steam_auth_begin(void)
     InterlockedExchange(&g_cancel, 0);
     unsigned port = 0;
     if (!g_wsa || !start_listen(&port)) {
-        set_status("Could not start Steam login");
+        set_status("Login failed to start");
         g_phase = STEAM_FAILED;
         return 0;
     }
@@ -1952,7 +2050,7 @@ steam_auth_begin(void)
     );
 
     g_phase = STEAM_WAITING;
-    set_status("Finish signing in with Steam in your browser");
+    set_status("Finish sign-in in browser");
 #ifdef _WIN32
     g_thread = CreateThread(NULL, 0, auth_thread, NULL, 0, NULL);
     if (!g_thread) {
@@ -1962,7 +2060,7 @@ steam_auth_begin(void)
 #endif
         close_listen();
         g_phase = STEAM_FAILED;
-        set_status("Could not start Steam login");
+        set_status("Login failed to start");
         return 0;
     }
     os_open_url(url);
@@ -1993,7 +2091,10 @@ steam_auth_sign_out(void)
     g_owns_known = 0;
     g_owns_d2 = -1;
     g_owns_forsaken = -1;
+    g_owns_shadowkeep = -1;
+    g_dd_resolve_ms = 0;
     g_phase = STEAM_IDLE;
+    g_fresh_login = 0;
     LeaveCriticalSection(&g_lock);
     clear_session_file();
     set_status("Signed out");
@@ -2003,6 +2104,21 @@ int
 steam_auth_signed_in(void)
 {
     return g_phase == STEAM_READY && g_id[0] != '\0' && g_name[0] != '\0';
+}
+
+int
+steam_auth_consume_fresh_login(void)
+{
+    int fresh = 0;
+
+    if (!g_ready) {
+        return 0;
+    }
+    EnterCriticalSection(&g_lock);
+    fresh = g_fresh_login;
+    g_fresh_login = 0;
+    LeaveCriticalSection(&g_lock);
+    return fresh;
 }
 
 int
@@ -2039,7 +2155,11 @@ const char *
 steam_auth_dd_user(void)
 {
     if (!g_dd_user[0] && g_id[0]) {
-        resolve_steam_account_name();
+        uint32_t now = os_tick_ms();
+        if (!g_dd_resolve_ms || (now - g_dd_resolve_ms) >= 4000u) {
+            g_dd_resolve_ms = now;
+            resolve_steam_account_name();
+        }
     }
     return g_dd_user;
 }
@@ -2075,7 +2195,10 @@ steam_auth_owns_forsaken(void)
 }
 
 int
-steam_auth_owns_red_war(void)
+steam_auth_owns_shadowkeep(void)
 {
-    return steam_auth_owns_d2();
+    if (!g_owns_known || g_owns_shadowkeep < 0) {
+        return -1;
+    }
+    return g_owns_shadowkeep > 0 ? 1 : 0;
 }

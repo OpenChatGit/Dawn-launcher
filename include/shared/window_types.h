@@ -36,7 +36,8 @@ typedef struct HostWindow {
     int mouse_down;
     int mouse_pressed;
     int mouse_released;
-    char text[32];
+    int mouse_wheel;
+    char text[128];
     int text_len;
     int key;
 } HostWindow;

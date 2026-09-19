@@ -375,23 +375,42 @@ window_pump(HostWindow *window)
             window->mouse_x = ev.xmotion.x;
             window->mouse_y = ev.xmotion.y;
         } else if (ev.type == ButtonPress) {
-            window->mouse_down = 1;
-            window->mouse_pressed = 1;
             window->mouse_x = ev.xbutton.x;
             window->mouse_y = ev.xbutton.y;
+            if (ev.xbutton.button == 4) {
+                window->mouse_wheel += 1;
+            } else if (ev.xbutton.button == 5) {
+                window->mouse_wheel -= 1;
+            } else if (ev.xbutton.button == 1) {
+                window->mouse_down = 1;
+                window->mouse_pressed = 1;
+            }
         } else if (ev.type == ButtonRelease) {
-            window->mouse_down = 0;
-            window->mouse_released = 1;
+            if (ev.xbutton.button == 1) {
+                window->mouse_down = 0;
+                window->mouse_released = 1;
+            }
         } else if (ev.type == KeyPress) {
-            KeySym key = XLookupKeysym(&ev.xkey, 0);
+            KeySym key = NoSymbol;
+            char buf[32];
+            int n = XLookupString(&ev.xkey, buf, (int)sizeof(buf) - 1, &key, NULL);
             if (key == XK_Escape) {
                 window->key = PLATFORM_KEY_ESCAPE;
-            } else if (key == XK_Return) {
+            } else if (key == XK_Return || key == XK_KP_Enter) {
                 window->key = PLATFORM_KEY_ENTER;
             } else if (key == XK_BackSpace) {
                 window->key = PLATFORM_KEY_BACKSPACE;
             } else if (key == XK_Tab) {
                 window->key = PLATFORM_KEY_TAB;
+            } else if (n > 0) {
+                int i;
+                for (i = 0; i < n && window->text_len < (int)sizeof(window->text) - 1; i++) {
+                    if ((unsigned char)buf[i] < 32) {
+                        continue;
+                    }
+                    window->text[window->text_len++] = buf[i];
+                }
+                window->text[window->text_len] = '\0';
             }
         } else if (ev.type == ConfigureNotify) {
             if (ev.xconfigure.width != window->width || ev.xconfigure.height != window->height) {
@@ -439,16 +458,37 @@ window_end_frame_input(HostWindow *window)
 {
     window->mouse_pressed = 0;
     window->mouse_released = 0;
+    window->mouse_wheel = 0;
     window->text[0] = '\0';
     window->text_len = 0;
     window->key = PLATFORM_KEY_NONE;
 }
 
-void
+int
+window_minimized(const HostWindow *window)
+{
+    (void)window;
+    return 0;
+}
+
+int
+window_focused(const HostWindow *window)
+{
+    Window focus = 0;
+    int revert = 0;
+
+    if (!window || !window->display) {
+        return 1;
+    }
+    XGetInputFocus((Display *)window->display, &focus, &revert);
+    return focus == (Window)window->xwindow;
+}
+
+int
 window_present(HostWindow *window)
 {
     if (!window || !window->display || !window->ximage) {
-        return;
+        return 0;
     }
     XPutImage(
         (Display *)window->display,
@@ -463,6 +503,7 @@ window_present(HostWindow *window)
         (unsigned)window->height
     );
     XFlush((Display *)window->display);
+    return 0;
 }
 
 static int
@@ -510,11 +551,11 @@ platform_pick_folder(char *out, int max)
         snprintf(
             cmd,
             sizeof(cmd),
-            "zenity --file-selection --directory --title='Choose Dawn folder' --filename='%s/' 2>/dev/null",
+            "LANG=C.UTF-8 LC_ALL=C.UTF-8 zenity --file-selection --directory --title='Choose Dawn folder' --filename='%s/' 2>/dev/null",
             current
         );
     } else {
-        snprintf(cmd, sizeof(cmd), "zenity --file-selection --directory --title='Choose Dawn folder' 2>/dev/null");
+        snprintf(cmd, sizeof(cmd), "LANG=C.UTF-8 LC_ALL=C.UTF-8 zenity --file-selection --directory --title='Choose Dawn folder' 2>/dev/null");
     }
     if (read_picker_line(cmd, out, max)) {
         return 1;
@@ -523,17 +564,30 @@ platform_pick_folder(char *out, int max)
         snprintf(
             cmd,
             sizeof(cmd),
-            "kdialog --getexistingdirectory '%s' 'Choose Dawn folder' 2>/dev/null",
+            "LANG=C.UTF-8 LC_ALL=C.UTF-8 kdialog --getexistingdirectory '%s' 'Choose Dawn folder' 2>/dev/null",
             current
         );
     } else {
-        snprintf(cmd, sizeof(cmd), "kdialog --getexistingdirectory \"$HOME\" 'Choose Dawn folder' 2>/dev/null");
+        snprintf(cmd, sizeof(cmd), "LANG=C.UTF-8 LC_ALL=C.UTF-8 kdialog --getexistingdirectory \"$HOME\" 'Choose Dawn folder' 2>/dev/null");
     }
     if (read_picker_line(cmd, out, max)) {
         return 1;
     }
-    snprintf(cmd, sizeof(cmd), "yad --file-selection --directory --title='Choose Dawn folder' 2>/dev/null");
+    snprintf(cmd, sizeof(cmd), "LANG=C.UTF-8 LC_ALL=C.UTF-8 yad --file-selection --directory --title='Choose Dawn folder' 2>/dev/null");
     return read_picker_line(cmd, out, max);
+}
+
+void
+window_keep_key_focus(HostWindow *window)
+{
+    (void)window;
+}
+
+void
+window_apply_cursor(HostWindow *window, int text)
+{
+    (void)window;
+    (void)text;
 }
 
 void
@@ -547,6 +601,7 @@ window_bind_platform(HostWindow *window, Platform *platform, const char *project
     platform->mouse_down = window->mouse_down;
     platform->mouse_pressed = window->mouse_pressed;
     platform->mouse_released = window->mouse_released;
+    platform->mouse_wheel = window->mouse_wheel;
     memcpy(platform->text, window->text, sizeof(platform->text));
     platform->text_len = window->text_len;
     platform->key = window->key;
@@ -600,7 +655,14 @@ window_bind_platform(HostWindow *window, Platform *platform, const char *project
     platform->install_ready = install_job_ready;
     platform->install_launch = install_job_launch;
     platform->install_uninstall = install_job_uninstall;
+    platform->install_parts = install_job_parts;
+    platform->install_uninstall_part = install_job_uninstall_part;
     platform->install_verify = install_job_verify;
+    platform->game_state = install_job_game_state;
+    platform->game_stop = install_job_game_stop;
+    platform->install_set_language = install_job_set_language;
+    platform->install_language = install_job_language;
+    platform->install_language_label = install_job_language_label;
     platform->steam_sign_in = steam_auth_begin;
     platform->steam_sign_out = steam_auth_sign_out;
     platform->steam_cancel = steam_auth_cancel;
@@ -612,5 +674,5 @@ window_bind_platform(HostWindow *window, Platform *platform, const char *project
     platform->steam_status = steam_auth_status;
     platform->steam_owns_d2 = steam_auth_owns_d2;
     platform->steam_owns_forsaken = steam_auth_owns_forsaken;
-    platform->steam_owns_red_war = steam_auth_owns_red_war;
+    platform->steam_owns_shadowkeep = steam_auth_owns_shadowkeep;
 }

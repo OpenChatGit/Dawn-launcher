@@ -6,6 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef APP_HAVE_ZLIB
+#include <zlib.h>
+#endif
+
 #ifdef _WIN32
 #include <windows.h>
 #include <tlhelp32.h>
@@ -13,6 +17,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 typedef unsigned int DWORD;
@@ -29,11 +34,51 @@ typedef unsigned int DWORD;
 #define INSTALL_MANIFEST_CONTENT "7180122903232116872"
 #define INSTALL_DEPOT_LANG "1085662"
 #define INSTALL_MANIFEST_LANG "2210332166360342287"
+
+typedef struct LangSpec {
+    const char *steam;
+    const char *label;
+    const char *depot;
+    const char *manifest;
+} LangSpec;
+
+static const LangSpec k_langs[] = {
+    { "english", "English", "1085662", "2210332166360342287" },
+    { "french", "French", "1085663", "2934940253687559290" },
+    { "german", "German", "1085664", "2207989571290186153" },
+    { "italian", "Italian", "1085665", "6668232053215128229" },
+    { "japanese", "Japanese", "1085666", "7430022397683116838" },
+    { "brazilian", "Portuguese (Brazil)", "1085667", "9037238175838085860" },
+    { "spanish", "Spanish", "1085668", "3424833900894552134" },
+    { "russian", "Russian", "1085669", "4539277942371480381" },
+    { "polish", "Polish", "1085670", "6407581507105256731" },
+    { "schinese", "Chinese (Simplified)", "1085671", "4397663774546719308" },
+    { "tchinese", "Chinese (Traditional)", "1085672", "3906738704604711877" },
+    { "latam", "Spanish (Latam)", "1085673", "4773170998099699561" },
+    { "koreana", "Korean", "1085674", "7148196199569436690" }
+};
+
+#define LANG_COUNT ((int)(sizeof(k_langs) / sizeof(k_langs[0])))
+#define DAWN_WORK_NONE 0
+#define DAWN_WORK_START 1
+#define DAWN_WORK_FIND 2
+#define DAWN_WORK_EXTRACT 3
+#define DAWN_WORK_DEPLOY 4
+#define DAWN_WORK_FINISH 5
+#define REMOVE_NONE 0
+#define REMOVE_DAWN 1
+#define REMOVE_SUNRISE 2
+#define REMOVE_FULL 3
+
+static const LangSpec *g_lang;
 #define INSTALL_MARKER ".dawn-ready"
 #define GAME_EXE_VERSION "86657.20.08.23"
 #define GAME_EXE_MAJOR 21122
 #define GAME_EXE_SIZE 122984224ull
+#define MIN_PACKAGE_FILES 1500
 #define DAWN_RELEASES_API "https://api.github.com/repos/isinternets/Dawn/releases/latest"
+#define DAWN_RELEASES_HTML "https://github.com/isinternets/Dawn/releases"
+#define DAWN_RELEASES_LATEST_HTML "https://github.com/isinternets/Dawn/releases/latest"
 #define DAWN_FALLBACK_ZIP "https://github.com/isinternets/Dawn/releases/download/0.1.3/Dawn-0.1.3.zip"
 #define DAWN_EXE_VERSION "86657.20.08.23.1800.d2_rc"
 
@@ -55,6 +100,7 @@ static char g_user[128];
 static char g_tool[MAX_PATH];
 static char g_secret[256];
 static char g_status[256];
+static uint32_t g_status_ms;
 static char g_log[4096];
 static size_t g_log_len;
 static InstallPhase g_phase;
@@ -69,23 +115,195 @@ static float g_depot_progress;
 static int g_installed;
 static uint32_t g_installed_check;
 static int g_dir_pinned;
+static uint32_t g_ready_gen;
+static char g_filelist[MAX_PATH];
 static int g_session_job;
 static int g_session_ready;
 static int g_session_tried;
+static int g_user_start;
+static int g_setup_creds;
+static int g_cancel;
+static int g_lang_only;
+static int g_launch_after;
+static int g_dawn_next;
+static int g_remove_next;
+static char g_dawn_payload[MAX_PATH];
 #ifdef _WIN32
 static HANDLE g_process;
 static HANDLE g_stdout_read;
 static HANDLE g_stdin_write;
+static HANDLE g_game_proc;
+static DWORD g_game_pid;
 #else
 static pid_t g_process;
 static int g_stdout_read;
 static int g_stdin_write;
+static pid_t g_game_pid;
 #endif
+static uint32_t g_game_launch_ms;
+static int g_game_state;
+static int g_d2_running;
+static uint32_t g_d2_running_ms;
+static int g_d2_window;
+static uint32_t g_d2_window_ms;
+
+static const LangSpec *game_language(void);
+
+static const LangSpec *
+lang_by_steam(const char *steam)
+{
+    int i;
+
+    if (!steam || !steam[0]) {
+        return &k_langs[0];
+    }
+    for (i = 0; i < LANG_COUNT; i++) {
+        if (os_stricmp(k_langs[i].steam, steam) == 0) {
+            return &k_langs[i];
+        }
+    }
+    return &k_langs[0];
+}
+
+static void
+persist_lang(void)
+{
+    char dawn[MAX_PATH];
+    char path[MAX_PATH];
+    FILE *file;
+
+    os_data_dir(dawn, sizeof(dawn));
+    if (!os_join(path, sizeof(path), dawn, "install_lang.txt")) {
+        return;
+    }
+    file = fopen(path, "wb");
+    if (!file) {
+        return;
+    }
+    fputs(game_language()->steam, file);
+    fclose(file);
+}
+
+static void
+load_lang(void)
+{
+    char dawn[MAX_PATH];
+    char path[MAX_PATH];
+    char line[64];
+    FILE *file;
+    size_t n;
+
+    os_data_dir(dawn, sizeof(dawn));
+    if (!os_join(path, sizeof(path), dawn, "install_lang.txt")) {
+        return;
+    }
+    file = fopen(path, "rb");
+    if (!file) {
+        return;
+    }
+    if (fgets(line, (int)sizeof(line), file)) {
+        n = strlen(line);
+        while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) {
+            line[--n] = '\0';
+        }
+        if (line[0]) {
+            g_lang = lang_by_steam(line);
+        }
+    }
+    fclose(file);
+}
+
+static const LangSpec *
+game_language(void)
+{
+    if (g_lang) {
+        return g_lang;
+    }
+    load_lang();
+    if (g_lang) {
+        return g_lang;
+    }
+    g_lang = &k_langs[0];
+    return g_lang;
+}
+
+static const char *
+lang_depot(void)
+{
+    return game_language()->depot;
+}
+
+static const char *
+lang_manifest(void)
+{
+    return game_language()->manifest;
+}
+
+static const char *
+lang_steam(void)
+{
+    return game_language()->steam;
+}
+
+static int
+status_holds(const char *text)
+{
+    return text &&
+        text[0] &&
+        (strcmp(text, "Folder removed") == 0 ||
+         strcmp(text, "Uninstalled Dawn") == 0 ||
+         strcmp(text, "Uninstalled Sunrise") == 0 ||
+         strcmp(text, "Removing Dawn Mod") == 0 ||
+         strcmp(text, "Removing Sunrise Mod") == 0 ||
+         strcmp(text, "Ready to install Dawn") == 0 ||
+         strcmp(text, "Could not remove Dawn") == 0 ||
+         strcmp(text, "Could not remove Sunrise") == 0 ||
+         strcmp(text, "Nothing to uninstall") == 0 ||
+         strcmp(text, "Busy, can't uninstall") == 0 ||
+         strcmp(text, "Close Destiny 2 first") == 0 ||
+         strcmp(text, "Folder looks unsafe") == 0 ||
+         strcmp(text, "Won't delete Steam install") == 0 ||
+         strcmp(text, "No game files here") == 0 ||
+         strcmp(text, "Cancelled") == 0 ||
+         strcmp(text, "Stopped") == 0 ||
+         strcmp(text, "Running") == 0 ||
+         strcmp(text, "Files verified") == 0 ||
+         strcmp(text, "Already installed") == 0 ||
+         strcmp(text, "Folder set") == 0 ||
+         strcmp(text, "Dawn failed to start") == 0);
+}
 
 static void
 set_status(const char *text)
 {
     snprintf(g_status, sizeof(g_status), "%s", text ? text : "");
+    g_status_ms = os_tick_ms();
+}
+
+static void
+expire_hold_status(void)
+{
+    uint32_t now;
+
+    if (g_busy || g_dawn_next != DAWN_WORK_NONE || g_remove_next || !status_holds(g_status)) {
+        return;
+    }
+    now = os_tick_ms();
+    if (g_status_ms == 0 || (now - g_status_ms) < 3500u) {
+        return;
+    }
+    if (strcmp(g_status, "Files verified") == 0 ||
+        strcmp(g_status, "Already installed") == 0) {
+        snprintf(g_status, sizeof(g_status), "%s", g_installed ? "Dawn is ready" : "Ready");
+    } else if (strcmp(g_status, "Uninstalled Dawn") == 0 ||
+               strcmp(g_status, "Uninstalled Sunrise") == 0 ||
+               strcmp(g_status, "Ready to install Dawn") == 0) {
+        g_status_ms = 0;
+        return;
+    } else {
+        g_status[0] = '\0';
+    }
+    g_status_ms = 0;
 }
 
 static void
@@ -150,6 +368,61 @@ parse_percent(const char *text)
     return best;
 }
 
+#ifdef _WIN32
+static void
+kill_pid_tree(DWORD pid)
+{
+    HANDLE snap;
+    PROCESSENTRY32 pe;
+    HANDLE proc;
+
+    if (!pid || pid == GetCurrentProcessId()) {
+        return;
+    }
+    snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap != INVALID_HANDLE_VALUE) {
+        pe.dwSize = sizeof(pe);
+        if (Process32First(snap, &pe)) {
+            do {
+                if (pe.th32ParentProcessID == pid) {
+                    kill_pid_tree(pe.th32ProcessID);
+                }
+            } while (Process32Next(snap, &pe));
+        }
+        CloseHandle(snap);
+    }
+    proc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+    if (proc) {
+        TerminateProcess(proc, 1);
+        CloseHandle(proc);
+    }
+}
+#endif
+
+static void
+stop_child_tree(void)
+{
+#ifdef _WIN32
+    if (g_process) {
+        DWORD pid = GetProcessId(g_process);
+        if (pid) {
+            kill_pid_tree(pid);
+        }
+        TerminateProcess(g_process, 1);
+        WaitForSingleObject(g_process, 1200);
+    }
+#else
+    if (g_process > 0) {
+        kill(g_process, SIGTERM);
+        kill(-g_process, SIGTERM);
+        usleep(80000);
+        kill(g_process, SIGKILL);
+        kill(-g_process, SIGKILL);
+        waitpid(g_process, NULL, 0);
+    }
+#endif
+}
+
 static void
 close_child(void)
 {
@@ -184,8 +457,11 @@ fail_job(const char *text)
 {
     close_child();
     g_busy = 0;
+    g_dawn_next = DAWN_WORK_NONE;
     g_verify = 0;
     g_need = INSTALL_NEED_NONE;
+    g_user_start = 0;
+    g_setup_creds = 0;
     g_phase = INSTALL_FAILED;
     set_status(text);
     clear_secret();
@@ -218,6 +494,11 @@ persist_dir(void)
     }
     fclose(file);
 }
+
+static void persist_lang(void);
+static void depot_work_dir(char *out, int max);
+static void normalize_install_dir(void);
+static void write_marker(const char *dir);
 
 #define WALK_BUDGET 800
 #define WALK_CHILD_MAX 64
@@ -307,13 +588,17 @@ path_parent(char *out, size_t max, const char *path)
 }
 
 static int
-list_any_cb(const char *name, int is_dir, void *user)
+count_files_cb(const char *name, int is_dir, void *user)
 {
-    int *found = (int *)user;
-    (void)name;
-    (void)is_dir;
-    *found = 1;
-    return 0;
+    int *count = (int *)user;
+
+    if (!is_dir && name && strcmp(name, ".") != 0 && strcmp(name, "..") != 0) {
+        *count += 1;
+        if (*count >= MIN_PACKAGE_FILES) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static int
@@ -385,16 +670,22 @@ find_game_exe(char *out, size_t max)
 }
 
 static int
-packages_ready(const char *dir)
+packages_count(const char *dir)
 {
     char path[MAX_PATH];
-    int found = 0;
+    int count = 0;
 
     if (!find_named(dir, "packages", 1, path, sizeof(path))) {
         return 0;
     }
-    os_list_dir(path, list_any_cb, &found);
-    return found;
+    os_list_dir(path, count_files_cb, &count);
+    return count;
+}
+
+static int
+packages_ready(const char *dir)
+{
+    return packages_count(dir) >= MIN_PACKAGE_FILES;
 }
 
 static int
@@ -429,13 +720,234 @@ marker_file_ok(const char *dir, const char *name)
         return 0;
     }
     return file_contains(path, INSTALL_MANIFEST_CONTENT) &&
-        file_contains(path, INSTALL_MANIFEST_LANG);
+        file_contains(path, lang_manifest());
 }
 
 static int
 marker_matches(const char *dir)
 {
     return marker_file_ok(dir, INSTALL_MARKER);
+}
+
+/*
+ * DepotDownloader records every depot it finished in
+ * <dir>/.DepotDownloader/depot.config: a raw-deflate stream wrapping a
+ * protobuf-net Dictionary<uint depot, ulong manifest> (repeated field 1,
+ * each entry = { 1: depot varint, 2: manifest varint }). It is only written
+ * after a depot completed, so it is the ground truth for "downloaded" and
+ * is not fooled by pre-allocated zero-filled files.
+ */
+#define DEPOT_CFG_MAX 64
+
+typedef struct DepotConfig {
+    int count;
+    uint32_t depot[DEPOT_CFG_MAX];
+    uint64_t manifest[DEPOT_CFG_MAX];
+} DepotConfig;
+
+static int
+pb_varint(const unsigned char **p, const unsigned char *end, uint64_t *out)
+{
+    uint64_t value = 0;
+    int shift = 0;
+
+    while (*p < end && shift < 64) {
+        unsigned char b = *(*p)++;
+        value |= (uint64_t)(b & 0x7f) << shift;
+        if (!(b & 0x80)) {
+            *out = value;
+            return 1;
+        }
+        shift += 7;
+    }
+    return 0;
+}
+
+static int
+pb_skip(const unsigned char **p, const unsigned char *end, unsigned wire)
+{
+    uint64_t n;
+
+    switch (wire) {
+    case 0:
+        return pb_varint(p, end, &n);
+    case 1:
+        if ((size_t)(end - *p) < 8) {
+            return 0;
+        }
+        *p += 8;
+        return 1;
+    case 2:
+        if (!pb_varint(p, end, &n) || n > (uint64_t)(end - *p)) {
+            return 0;
+        }
+        *p += (size_t)n;
+        return 1;
+    case 5:
+        if ((size_t)(end - *p) < 4) {
+            return 0;
+        }
+        *p += 4;
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int
+parse_depot_config(const unsigned char *data, size_t len, DepotConfig *cfg)
+{
+    const unsigned char *p = data;
+    const unsigned char *end = data + len;
+
+    cfg->count = 0;
+    while (p < end) {
+        uint64_t tag;
+        unsigned field;
+        unsigned wire;
+
+        if (!pb_varint(&p, end, &tag)) {
+            return 0;
+        }
+        field = (unsigned)(tag >> 3);
+        wire = (unsigned)(tag & 7u);
+        if (field == 1 && wire == 2) {
+            uint64_t n;
+            const unsigned char *q;
+            const unsigned char *qend;
+            uint64_t key = 0;
+            uint64_t val = 0;
+
+            if (!pb_varint(&p, end, &n) || n > (uint64_t)(end - p)) {
+                return 0;
+            }
+            q = p;
+            qend = p + (size_t)n;
+            while (q < qend) {
+                uint64_t t2;
+                if (!pb_varint(&q, qend, &t2)) {
+                    return 0;
+                }
+                if ((t2 & 7u) == 0) {
+                    uint64_t v;
+                    if (!pb_varint(&q, qend, &v)) {
+                        return 0;
+                    }
+                    if ((t2 >> 3) == 1) {
+                        key = v;
+                    } else if ((t2 >> 3) == 2) {
+                        val = v;
+                    }
+                } else if (!pb_skip(&q, qend, (unsigned)(t2 & 7u))) {
+                    return 0;
+                }
+            }
+            if (cfg->count < DEPOT_CFG_MAX) {
+                cfg->depot[cfg->count] = (uint32_t)key;
+                cfg->manifest[cfg->count] = val;
+                cfg->count += 1;
+            }
+            p = qend;
+        } else if (!pb_skip(&p, end, wire)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
+inflate_raw(const unsigned char *in, size_t in_len, unsigned char *out, size_t out_max, size_t *out_len)
+{
+#ifdef APP_HAVE_ZLIB
+    z_stream s;
+    int rc;
+
+    memset(&s, 0, sizeof(s));
+    if (inflateInit2(&s, -15) != Z_OK) {
+        return 0;
+    }
+    s.next_in = (Bytef *)in;
+    s.avail_in = (uInt)in_len;
+    s.next_out = out;
+    s.avail_out = (uInt)out_max;
+    rc = inflate(&s, Z_FINISH);
+    *out_len = out_max - s.avail_out;
+    inflateEnd(&s);
+    return rc == Z_STREAM_END;
+#else
+    (void)in;
+    (void)in_len;
+    (void)out;
+    (void)out_max;
+    *out_len = 0;
+    return 0;
+#endif
+}
+
+/* 1 = parsed, 0 = file missing/unreadable, -1 = present but undecodable */
+static int
+load_depot_config(const char *dir, DepotConfig *cfg)
+{
+    char trace[MAX_PATH];
+    char path[MAX_PATH];
+    unsigned char raw[8192];
+    unsigned char plain[16384];
+    size_t raw_len;
+    size_t plain_len = 0;
+    FILE *file;
+
+    cfg->count = 0;
+    if (!dir || !dir[0] ||
+        !os_join(trace, sizeof(trace), dir, ".DepotDownloader") ||
+        !os_join(path, sizeof(path), trace, "depot.config")) {
+        return 0;
+    }
+    file = fopen(path, "rb");
+    if (!file) {
+        return 0;
+    }
+    raw_len = fread(raw, 1, sizeof(raw), file);
+    fclose(file);
+    if (raw_len == 0 || raw_len >= sizeof(raw)) {
+        return raw_len == 0 ? 0 : -1;
+    }
+    if (inflate_raw(raw, raw_len, plain, sizeof(plain), &plain_len) &&
+        parse_depot_config(plain, plain_len, cfg)) {
+        return 1;
+    }
+    /* tolerate an uncompressed store as well */
+    if (parse_depot_config(raw, raw_len, cfg)) {
+        return 1;
+    }
+    cfg->count = 0;
+    return -1;
+}
+
+/* 1 = depot finished with that manifest, 0 = not finished, -1 = unknown (no depot.config) */
+static int
+depot_config_has(const char *dir, const char *depot, const char *manifest)
+{
+    DepotConfig cfg;
+    uint32_t want_depot;
+    uint64_t want_manifest;
+    int rc;
+    int i;
+
+    if (!depot || !manifest) {
+        return -1;
+    }
+    rc = load_depot_config(dir, &cfg);
+    if (rc <= 0) {
+        return rc == 0 ? -1 : 0;
+    }
+    want_depot = (uint32_t)strtoul(depot, NULL, 10);
+    want_manifest = strtoull(manifest, NULL, 10);
+    for (i = 0; i < cfg.count; i++) {
+        if (cfg.depot[i] == want_depot) {
+            return cfg.manifest[i] == want_manifest;
+        }
+    }
+    return 0;
 }
 
 static int
@@ -558,19 +1070,39 @@ dawn_dll_path(const char *dir, char *out, size_t max)
 static int
 dawn_dll_ready(const char *dir)
 {
+    static char cached_dir[MAX_PATH];
+    static uint32_t cached_ms;
+    static uint32_t cached_gen;
+    static int cached_ok;
     char path[MAX_PATH];
     uint64_t size;
+    uint32_t now;
 
+    if (!dir || !dir[0]) {
+        return 0;
+    }
+    now = os_tick_ms();
+    if (cached_ms &&
+        cached_gen == g_ready_gen &&
+        (now - cached_ms) < 4000u &&
+        os_stricmp(cached_dir, dir) == 0) {
+        return cached_ok;
+    }
+    cached_gen = g_ready_gen;
+    snprintf(cached_dir, sizeof(cached_dir), "%s", dir);
+    cached_ms = now;
     if (!dawn_dll_path(dir, path, sizeof(path))) {
+        cached_ok = 0;
         return 0;
     }
 #ifdef _WIN32
     (void)size;
-    return dll_product_is(path, "Dawn");
+    cached_ok = dll_product_is(path, "Dawn");
 #else
     size = os_file_size(path);
-    return size > 8ull * 1024ull * 1024ull && size < 50ull * 1024ull * 1024ull;
+    cached_ok = size > 8ull * 1024ull * 1024ull && size < 50ull * 1024ull * 1024ull;
 #endif
+    return cached_ok;
 }
 
 static int
@@ -581,70 +1113,406 @@ dawn_ready(const char *dir)
     return dir && dir[0] && dawn_settings_in(dir, settings, sizeof(settings)) && dawn_dll_ready(dir);
 }
 
+static void
+invalidate_game_scan(void)
+{
+    g_d2_running_ms = 0;
+    g_d2_window_ms = 0;
+}
+
 static int
 destiny2_running(void)
+{
+    uint32_t now = os_tick_ms();
+    uint32_t ttl = g_game_launch_ms ? 120u : 400u;
+
+    if (g_d2_running_ms && (now - g_d2_running_ms) < ttl) {
+        return g_d2_running;
+    }
+#ifdef _WIN32
+    {
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        PROCESSENTRY32 pe;
+        int found = 0;
+
+        if (snap == INVALID_HANDLE_VALUE) {
+            return g_d2_running;
+        }
+        pe.dwSize = sizeof(pe);
+        if (Process32First(snap, &pe)) {
+            do {
+                if (os_stricmp(pe.szExeFile, "destiny2.exe") == 0) {
+                    found = 1;
+                    break;
+                }
+            } while (Process32Next(snap, &pe));
+        }
+        CloseHandle(snap);
+        g_d2_running = found;
+    }
+#else
+    g_d2_running = system("pidof -q destiny2.exe") == 0 || system("pidof -q destiny2") == 0;
+#endif
+    g_d2_running_ms = now;
+    return g_d2_running;
+}
+
+static void
+clear_game_proc(void)
+{
+#ifdef _WIN32
+    if (g_game_proc) {
+        CloseHandle(g_game_proc);
+        g_game_proc = NULL;
+    }
+    g_game_pid = 0;
+#else
+    g_game_pid = 0;
+#endif
+    g_game_launch_ms = 0;
+}
+
+static int
+game_proc_alive(void)
+{
+#ifdef _WIN32
+    DWORD code = 0;
+
+    if (g_game_proc) {
+        if (GetExitCodeProcess(g_game_proc, &code) && code == STILL_ACTIVE) {
+            return 1;
+        }
+        CloseHandle(g_game_proc);
+        g_game_proc = NULL;
+        g_game_pid = 0;
+    }
+#else
+    if (g_game_pid > 0) {
+        if (kill(g_game_pid, 0) == 0) {
+            return 1;
+        }
+        g_game_pid = 0;
+    }
+#endif
+    return destiny2_running();
+}
+
+static void
+kill_destiny2(void)
 {
 #ifdef _WIN32
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     PROCESSENTRY32 pe;
-    int found = 0;
 
+    if (g_game_pid) {
+        kill_pid_tree(g_game_pid);
+    }
     if (snap == INVALID_HANDLE_VALUE) {
-        return 0;
+        return;
     }
     pe.dwSize = sizeof(pe);
     if (Process32First(snap, &pe)) {
         do {
             if (os_stricmp(pe.szExeFile, "destiny2.exe") == 0) {
-                found = 1;
-                break;
+                kill_pid_tree(pe.th32ProcessID);
             }
         } while (Process32Next(snap, &pe));
     }
     CloseHandle(snap);
-    return found;
 #else
-    return system("pidof -q destiny2.exe") == 0 || system("pidof -q destiny2") == 0;
+    if (g_game_pid > 0) {
+        kill(g_game_pid, SIGTERM);
+        kill(-g_game_pid, SIGTERM);
+    }
+    system("pkill -f '[Dd]estiny2' >/dev/null 2>&1");
 #endif
 }
 
-typedef struct DepotNameScan {
-    int content;
-    int lang;
-} DepotNameScan;
+#ifdef _WIN32
+static BOOL CALLBACK
+destiny2_wnd_cb(HWND hwnd, LPARAM lp)
+{
+    DWORD pid = 0;
+    char title[80];
+
+    if (!IsWindowVisible(hwnd)) {
+        return TRUE;
+    }
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (g_game_pid && pid == g_game_pid) {
+        *(int *)lp = 1;
+        return FALSE;
+    }
+    if (GetWindowTextA(hwnd, title, (int)sizeof(title)) > 0 &&
+        (strstr(title, "Destiny 2") || strstr(title, "Destiny2"))) {
+        *(int *)lp = 1;
+        return FALSE;
+    }
+    return TRUE;
+}
+#endif
 
 static int
-depot_name_cb(const char *name, int is_dir, void *user)
+destiny2_has_window(void)
 {
-    DepotNameScan *scan = (DepotNameScan *)user;
-    (void)is_dir;
-    if (!name) {
-        return 1;
+#ifdef _WIN32
+    uint32_t now = os_tick_ms();
+    uint32_t ttl = g_game_launch_ms ? 150u : 400u;
+    int found = 0;
+
+    if (g_d2_window_ms && (now - g_d2_window_ms) < ttl) {
+        return g_d2_window;
     }
-    if (strstr(name, INSTALL_DEPOT_CONTENT) || strstr(name, INSTALL_MANIFEST_CONTENT)) {
-        scan->content = 1;
+    EnumWindows(destiny2_wnd_cb, (LPARAM)&found);
+    g_d2_window = found;
+    g_d2_window_ms = now;
+    return found;
+#else
+    return 0;
+#endif
+}
+
+static void
+exe_dir(const char *exe, char *out, size_t max)
+{
+    char *slash;
+
+    snprintf(out, max, "%s", exe);
+    slash = strrchr(out, '\\');
+    if (!slash) {
+        slash = strrchr(out, '/');
     }
-    if (strstr(name, INSTALL_DEPOT_LANG) || strstr(name, INSTALL_MANIFEST_LANG)) {
-        scan->lang = 1;
+    if (slash) {
+        *slash = '\0';
     }
+}
+
+static void
+remove_steam_appid(const char *dir)
+{
+    char path[MAX_PATH];
+    char nested[MAX_PATH];
+
+    if (!dir || !dir[0]) {
+        return;
+    }
+    if (os_join(path, sizeof(path), dir, "steam_appid.txt")) {
+        os_delete_file(path);
+    }
+    if (os_join(path, sizeof(path), dir, "steam_app_id.txt")) {
+        os_delete_file(path);
+    }
+    if (os_join(nested, sizeof(nested), dir, "bin") &&
+        os_join(path, sizeof(path), nested, "x64") &&
+        os_join(nested, sizeof(nested), path, "steam_appid.txt")) {
+        os_delete_file(nested);
+    }
+}
+
+static int
+launch_game_tracked(void)
+{
+    char root[MAX_PATH];
+    char exe[MAX_PATH];
+
+    if (!g_dir[0]) {
+        return 0;
+    }
+    snprintf(root, sizeof(root), "%s", g_dir);
+    remove_steam_appid(root);
+    if (!(os_join(exe, sizeof(exe), root, "destiny2.exe") && file_exists(exe)) &&
+        !find_game_exe_in(root, exe, sizeof(exe))) {
+        return 0;
+    }
+#ifdef _WIN32
+    {
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        char cmd[MAX_PATH + 24];
+
+        memset(&si, 0, sizeof(si));
+        memset(&pi, 0, sizeof(pi));
+        si.cb = sizeof(si);
+        snprintf(cmd, sizeof(cmd), "\"%s\"", exe);
+        SetEnvironmentVariableA("SteamAppId", NULL);
+        SetEnvironmentVariableA("SteamGameId", NULL);
+        SetEnvironmentVariableA("SteamOverlayGameId", NULL);
+        SetEnvironmentVariableA("DAWN_FOREST_BASELINE", "1");
+        if (!CreateProcessA(
+                exe,
+                cmd,
+                NULL,
+                NULL,
+                FALSE,
+                CREATE_NEW_PROCESS_GROUP,
+                NULL,
+                root,
+                &si,
+                &pi
+            )) {
+            return 0;
+        }
+        CloseHandle(pi.hThread);
+        clear_game_proc();
+        g_game_proc = pi.hProcess;
+        g_game_pid = pi.dwProcessId;
+    }
+#else
+    {
+        pid_t pid = fork();
+        if (pid < 0) {
+            return 0;
+        }
+        if (pid == 0) {
+            unsetenv("SteamAppId");
+            unsetenv("SteamGameId");
+            unsetenv("SteamOverlayGameId");
+            setenv("DAWN_FOREST_BASELINE", "1", 1);
+            if (root[0] && chdir(root) != 0) {
+                _exit(1);
+            }
+            execl(exe, exe, (char *)NULL);
+            _exit(127);
+        }
+        g_game_pid = pid;
+    }
+#endif
+    g_game_launch_ms = os_tick_ms();
+    invalidate_game_scan();
+    set_status("Starting");
     return 1;
+}
+
+static void
+poll_game(void)
+{
+    int running = destiny2_running();
+    int alive = game_proc_alive();
+    uint32_t now = os_tick_ms();
+    uint32_t age = g_game_launch_ms ? now - g_game_launch_ms : 0;
+
+    if (!running && !alive) {
+        g_game_state = (g_game_launch_ms && age < 2500u) ? 1 : 0;
+    } else if (running && age >= 12000u) {
+        g_game_state = 2;
+    } else if (running && destiny2_has_window() && age >= 4000u) {
+        g_game_state = 2;
+    } else {
+        g_game_state = 1;
+    }
+
+    if (running) {
+        if (strcmp(g_status, "Starting") == 0) {
+            set_status("Running");
+        }
+        return;
+    }
+    if (alive && g_game_launch_ms && age < 12000u) {
+        return;
+    }
+    if ((strcmp(g_status, "Starting") == 0 || strcmp(g_status, "Running") == 0) && !alive && !running) {
+        clear_game_proc();
+        set_status("Dawn is ready");
+    }
+}
+
+/*
+ * "Finished" state of the two depots we need. DepotDownloader's depot.config
+ * is authoritative when present. Without it (foreign/hand-made folders) only
+ * our own success marker counts, never bare file sizes: DepotDownloader
+ * pre-allocates every file at full size before any bytes arrive, so a
+ * cancelled run looks complete on disk.
+ */
+static int
+content_depot_finished(const char *dir)
+{
+    int rc;
+
+    if (!dir || !dir[0]) {
+        return 0;
+    }
+    rc = depot_config_has(dir, INSTALL_DEPOT_CONTENT, INSTALL_MANIFEST_CONTENT);
+    if (rc >= 0) {
+        return rc;
+    }
+    return marker_matches(dir);
+}
+
+static int
+language_depot_finished(const char *dir)
+{
+    int rc;
+
+    if (!dir || !dir[0]) {
+        return 0;
+    }
+    rc = depot_config_has(dir, lang_depot(), lang_manifest());
+    if (rc >= 0) {
+        return rc;
+    }
+    return marker_matches(dir);
 }
 
 static int
 dawn_depots_present(const char *dir)
 {
-    char trace[MAX_PATH];
-    DepotNameScan scan;
+    return content_depot_finished(dir) && language_depot_finished(dir);
+}
 
-    if (marker_matches(dir)) {
-        return 1;
+static int
+language_depot_present(const char *dir)
+{
+    return language_depot_finished(dir);
+}
+
+static int
+content_files_ready(const char *dir)
+{
+    char exe[MAX_PATH];
+
+    if (!dir || !dir[0] || !os_dir_exists(dir)) {
+        return 0;
     }
-    memset(&scan, 0, sizeof(scan));
-    if (os_join(trace, sizeof(trace), dir, ".DepotDownloader") && os_dir_exists(trace)) {
-        os_list_dir(trace, depot_name_cb, &scan);
+    if (!find_game_exe_in(dir, exe, sizeof(exe)) || os_file_size(exe) != GAME_EXE_SIZE) {
+        return 0;
     }
-    os_list_dir(dir, depot_name_cb, &scan);
-    return scan.content && scan.lang;
+    if (!packages_ready(dir)) {
+        return 0;
+    }
+    return 1;
+}
+
+static int
+content_depot_present(const char *dir)
+{
+    return content_depot_finished(dir) && content_files_ready(dir);
+}
+
+static int
+depots_ready(const char *dir)
+{
+    return content_depot_present(dir) && language_depot_finished(dir);
+}
+
+static int
+install_complete(const char *dir)
+{
+    if (!depots_ready(dir) || !dawn_ready(dir)) {
+        return 0;
+    }
+    if (!marker_matches(dir)) {
+        write_marker(dir);
+    }
+    return 1;
+}
+
+static void
+invalidate_install_ready(void)
+{
+    g_ready_gen += 1;
+    g_installed = 0;
+    g_installed_check = 0;
+    g_scan_check = 0;
 }
 
 typedef struct ForeignDepotScan {
@@ -703,7 +1571,7 @@ foreign_depot_cb(const char *name, int is_dir, void *user)
         scan->foreign = 1;
         return 0;
     }
-    if (strcmp(depot, INSTALL_DEPOT_LANG) == 0 && strcmp(manifest, INSTALL_MANIFEST_LANG) != 0) {
+    if (strcmp(depot, lang_depot()) == 0 && strcmp(manifest, lang_manifest()) != 0) {
         scan->foreign = 1;
         return 0;
     }
@@ -897,6 +1765,9 @@ is_live_latest_d2(const char *dir)
     if (!dir || !dir[0] || !os_dir_exists(dir)) {
         return 0;
     }
+    if (dawn_depots_present(dir)) {
+        return 0;
+    }
     if (find_game_exe_in(dir, path, sizeof(path)) && os_file_size(path) == GAME_EXE_SIZE) {
         return 0;
     }
@@ -963,6 +1834,288 @@ game_root_in(const char *dir, char *out, size_t max)
         return 1;
     }
     return 0;
+}
+
+static int
+depot_root_in(const char *dir, char *out, size_t max)
+{
+    char nested[MAX_PATH];
+
+    if (!dir || !dir[0] || !os_dir_exists(dir)) {
+        return 0;
+    }
+    if (dawn_depots_present(dir) || game_root_ok(dir) ||
+        (find_game_exe_in(dir, NULL, 0) && packages_ready(dir) && !is_live_latest_d2(dir))) {
+        if (out && max > 0) {
+            snprintf(out, max, "%s", dir);
+        }
+        return 1;
+    }
+    if (find_named(dir, "Destiny2", 1, nested, sizeof(nested)) &&
+        (dawn_depots_present(nested) || game_root_ok(nested) ||
+         (find_game_exe_in(nested, NULL, 0) && packages_ready(nested) && !is_live_latest_d2(nested)))) {
+        if (out && max > 0) {
+            snprintf(out, max, "%s", nested);
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static int
+adopt_depot_root(void)
+{
+    char root[MAX_PATH];
+
+    if (!depot_root_in(g_dir, root, sizeof(root))) {
+        return 0;
+    }
+    if (os_stricmp(g_dir, root) != 0) {
+        snprintf(g_dir, sizeof(g_dir), "%s", root);
+        persist_dir();
+    }
+    return 1;
+}
+
+static int
+same_volume(const char *a, const char *b)
+{
+#ifdef _WIN32
+    char va[MAX_PATH];
+    char vb[MAX_PATH];
+
+    if (!a || !b || !GetVolumePathNameA(a, va, MAX_PATH) || !GetVolumePathNameA(b, vb, MAX_PATH)) {
+        return 0;
+    }
+    return os_stricmp(va, vb) == 0;
+#else
+    struct stat sa;
+    struct stat sb;
+    return a && b && stat(a, &sa) == 0 && stat(b, &sb) == 0 && sa.st_dev == sb.st_dev;
+#endif
+}
+
+static int
+link_or_copy_file(const char *from, const char *to)
+{
+    if (!from || !to) {
+        return 0;
+    }
+    /* DepotDownloader rewrites its trace files in place; never share those
+     * inodes, and always refresh them so the cache tracks completed depots. */
+    if (contains_ci(from, ".DepotDownloader")) {
+        return os_copy_file(from, to);
+    }
+    if (file_exists(to)) {
+        return 1;
+    }
+#ifdef _WIN32
+    if (CreateHardLinkA(to, from, NULL)) {
+        return 1;
+    }
+#else
+    if (link(from, to) == 0) {
+        return 1;
+    }
+#endif
+    if (os_file_size(from) > 8ull * 1024ull * 1024ull) {
+        return 0;
+    }
+    return os_copy_file(from, to);
+}
+
+static int stage_cached_game(const char *from, const char *to);
+
+static int
+stage_entry_cb(const char *name, int is_dir, void *user)
+{
+    const char **dirs = (const char **)user;
+    char src[MAX_PATH];
+    char dst[MAX_PATH];
+
+    if (!name || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        return 1;
+    }
+    if (os_stricmp(name, "Dawn") == 0 ||
+        os_stricmp(name, "Sunrise") == 0 ||
+        os_stricmp(name, "Restoration") == 0 ||
+        os_stricmp(name, ".dawn") == 0 ||
+        os_stricmp(name, ".sunrise") == 0 ||
+        os_stricmp(name, "launch-destiny.cmd") == 0 ||
+        os_stricmp(name, "launch-destiny.sh") == 0 ||
+        os_stricmp(name, "release.json") == 0) {
+        return 1;
+    }
+    if (!os_join(src, sizeof(src), dirs[0], name) || !os_join(dst, sizeof(dst), dirs[1], name)) {
+        return 1;
+    }
+    if (os_stricmp(name, "steam_api64.dll") == 0 && os_file_size(src) > (1ull << 20)) {
+        return 1;
+    }
+    if (is_dir) {
+        stage_cached_game(src, dst);
+        return 1;
+    }
+    link_or_copy_file(src, dst);
+    return 1;
+}
+
+static int
+stage_cached_game(const char *from, const char *to)
+{
+    const char *dirs[3];
+
+    if (!from || !to || !os_dir_exists(from)) {
+        return 0;
+    }
+    if (os_stricmp(from, to) == 0) {
+        return 1;
+    }
+    os_mkdirs(to);
+    dirs[0] = from;
+    dirs[1] = to;
+    dirs[2] = "ok";
+    os_list_dir(from, stage_entry_cb, dirs);
+    return content_depot_present(to) || dirs[2][0] != '\0';
+}
+
+static void
+depot_cache_dir(char *out, size_t max)
+{
+    char dawn[MAX_PATH];
+
+    os_data_dir(dawn, sizeof(dawn));
+    if (!os_join(out, max, dawn, "depot-cache")) {
+        out[0] = '\0';
+    }
+}
+
+static int
+depot_cache_ready(const char *dir)
+{
+    return dir && dir[0] && content_depot_present(dir) && language_depot_present(dir);
+}
+
+static int
+cache_root_ok(const char *dir, char *out, size_t max)
+{
+    char nested[MAX_PATH];
+
+    if (!dir || !dir[0] || !os_dir_exists(dir)) {
+        return 0;
+    }
+    if (content_depot_present(dir)) {
+        snprintf(out, max, "%s", dir);
+        return 1;
+    }
+    if (os_join(nested, sizeof(nested), dir, INSTALL_DEPOT_CONTENT) && content_depot_present(nested)) {
+        snprintf(out, max, "%s", nested);
+        return 1;
+    }
+    if (os_join(nested, sizeof(nested), dir, INSTALL_MANIFEST_CONTENT) && content_depot_present(nested)) {
+        snprintf(out, max, "%s", nested);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+find_content_cache(char *out, size_t max)
+{
+    char base[MAX_PATH];
+    char path[MAX_PATH];
+    char tool[MAX_PATH];
+
+    if (content_depot_present(g_dir)) {
+        snprintf(out, max, "%s", g_dir);
+        return 1;
+    }
+    depot_cache_dir(path, sizeof(path));
+    if (path[0] && os_stricmp(path, g_dir) != 0 && cache_root_ok(path, out, max)) {
+        return 1;
+    }
+    tool[0] = '\0';
+    if (g_tool[0]) {
+        exe_dir(g_tool, tool, sizeof(tool));
+    } else if (g_root[0] && os_join(path, sizeof(path), g_root, "tools") &&
+               os_join(tool, sizeof(tool), path, "DepotDownloader") &&
+               !os_dir_exists(tool)) {
+        tool[0] = '\0';
+    }
+    if (tool[0] && os_join(path, sizeof(path), tool, "depots") &&
+        os_join(base, sizeof(base), path, INSTALL_DEPOT_CONTENT) &&
+        cache_root_ok(base, out, max)) {
+        return 1;
+    }
+    depot_work_dir(base, (int)sizeof(base));
+    if (cache_root_ok(base, out, max)) {
+        return 1;
+    }
+    if (os_join(path, sizeof(path), base, "depots") &&
+        os_join(base, sizeof(base), path, INSTALL_DEPOT_CONTENT) &&
+        cache_root_ok(base, out, max)) {
+        return 1;
+    }
+    return 0;
+}
+
+static void
+preserve_depot_cache(void)
+{
+    char cache[MAX_PATH];
+
+    if (!g_dir[0] || !content_depot_present(g_dir)) {
+        return;
+    }
+    depot_cache_dir(cache, sizeof(cache));
+    if (!cache[0] || os_stricmp(g_dir, cache) == 0) {
+        return;
+    }
+    if (!same_volume(g_dir, cache)) {
+        return;
+    }
+    if (depot_cache_ready(cache)) {
+        return;
+    }
+    /* Volumes without hardlinks (FAT/exFAT) can never complete the cache;
+     * don't re-walk thousands of files on every launch. */
+    static int gave_up;
+    if (gave_up) {
+        return;
+    }
+    os_mkdirs(cache);
+    stage_cached_game(g_dir, cache);
+    if (!depot_cache_ready(cache)) {
+        gave_up = 1;
+    }
+}
+
+static int
+apply_cached_install(void)
+{
+    char cache[MAX_PATH];
+
+    if (!g_dir[0]) {
+        return 0;
+    }
+    os_mkdirs(g_dir);
+    if (content_depot_present(g_dir)) {
+        return 1;
+    }
+    cache[0] = '\0';
+    if (!find_content_cache(cache, sizeof(cache)) || !cache[0] || os_stricmp(cache, g_dir) == 0) {
+        return 0;
+    }
+    if (!same_volume(cache, g_dir)) {
+        return 0;
+    }
+    set_status("Using cached game files");
+    g_phase = INSTALL_RUNNING;
+    g_depot_progress = 0.15f;
+    stage_cached_game(cache, g_dir);
+    adopt_depot_root();
+    g_depot_progress = content_depot_present(g_dir) ? 1.0f : 0.15f;
+    return content_depot_present(g_dir);
 }
 
 static int
@@ -1143,8 +2296,8 @@ refresh_installed(void)
         if (os_stricmp(g_dir, root) != 0) {
             adopt_dir(root);
         }
-        g_installed = 1;
-        return 1;
+        g_installed = install_complete(root);
+        return g_installed;
     }
 
     memset(&st, 0, sizeof(st));
@@ -1234,8 +2387,8 @@ refresh_installed(void)
 
     if (st.hit) {
         adopt_dir(st.found);
-        g_installed = 1;
-        return 1;
+        g_installed = install_complete(st.found);
+        return g_installed;
     }
     g_installed = 0;
     return 0;
@@ -1256,12 +2409,13 @@ write_marker(const char *dir)
     }
     fprintf(
         file,
-        "app %s\ncontent %s %s\nlanguage %s %s\n",
+        "app %s\ncontent %s %s\nlanguage %s %s %s\n",
         INSTALL_APP,
         INSTALL_DEPOT_CONTENT,
         INSTALL_MANIFEST_CONTENT,
-        INSTALL_DEPOT_LANG,
-        INSTALL_MANIFEST_LANG
+        lang_steam(),
+        lang_depot(),
+        lang_manifest()
     );
     fclose(file);
 }
@@ -1307,8 +2461,10 @@ load_install_dir(void)
     if (g_dir[0] == '\0') {
         os_join(g_dir, sizeof(g_dir), dawn, "Destiny2");
     }
+    normalize_install_dir();
     os_mkdirs(g_dir);
     persist_dir();
+    load_lang();
     refresh_installed();
 }
 
@@ -1398,7 +2554,7 @@ send_secret(void)
 #endif
     clear_secret();
     g_need = INSTALL_NEED_NONE;
-    set_status("Signing in to Steam...");
+    set_status("Signing in");
     return 1;
 }
 
@@ -1493,13 +2649,31 @@ extract_leaf(const char *text, char *out, int max)
 static void
 status_from_work(const char *verb, const char *text)
 {
-    char leaf[96];
+    (void)text;
+    set_status(verb);
+}
 
-    if (extract_leaf(text, leaf, (int)sizeof(leaf))) {
-        snprintf(g_status, sizeof(g_status), "%s %s", verb, leaf);
+static void
+set_work_status(void)
+{
+    if (g_verify) {
+        set_status("Checking files");
         return;
     }
-    snprintf(g_status, sizeof(g_status), "%s", verb);
+    if (g_lang_only) {
+        set_status("Downloading language");
+        return;
+    }
+    set_status("Downloading game");
+}
+
+static int
+status_is_prepare(void)
+{
+    return g_status[0] == '\0' ||
+        strcmp(g_status, "Preparing files") == 0 ||
+        strcmp(g_status, "Downloading files") == 0 ||
+        strcmp(g_status, "Checking files") == 0;
 }
 
 static void
@@ -1509,12 +2683,15 @@ scan_output(const char *text)
     if (pct >= 0.0f) {
         g_depot_progress = pct;
         g_need = INSTALL_NEED_NONE;
+        if (status_is_prepare()) {
+            set_work_status();
+        }
     }
     capture_dd_user(text);
 
     if (contains_ci(text, "Enter account password")) {
         g_need = INSTALL_NEED_PASSWORD;
-        set_status("Enter password in the app");
+        set_status("Enter password");
         if (g_secret[0]) {
             send_secret();
         }
@@ -1523,42 +2700,63 @@ scan_output(const char *text)
     if (contains_ci(text, "STEAM GUARD!")) {
         if (contains_ci(text, "Mobile App")) {
             g_need = INSTALL_NEED_NONE;
-            set_status("Confirm Steam Guard on your phone");
+            set_status("Confirm Guard on phone");
             return;
         }
         g_need = INSTALL_NEED_GUARD;
-        set_status("Enter Steam Guard code in the app");
+        set_status("Enter Guard code");
         if (g_secret[0]) {
             send_secret();
         }
         return;
     }
     if (contains_ci(text, "Logging ") && contains_ci(text, "into Steam")) {
-        set_status("Opening Steam session...");
+        set_status("Opening Steam");
         return;
     }
-    if (contains_ci(text, "validat")) {
-        status_from_work("Checking", text);
+    if (contains_ci(text, "validat") && !contains_ci(text, "invalid")) {
+        set_status(g_verify ? "Checking" : "Downloading");
         return;
     }
-    if (contains_ci(text, "pre-alloc")) {
-        set_status("Preparing files...");
+    if (contains_ci(text, "pre-alloc") || contains_ci(text, "prealloc")) {
+        set_work_status();
         return;
     }
-    if (contains_ci(text, "processing depot") || contains_ci(text, "depot complete")) {
-        set_status(g_verify ? "Finishing file check..." : "Finishing download...");
+    if (contains_ci(text, "already exist") ||
+        contains_ci(text, "already installed") ||
+        contains_ci(text, "up to date") ||
+        contains_ci(text, "no files to download") ||
+        contains_ci(text, "from cache") ||
+        contains_ci(text, "using local") ||
+        contains_ci(text, "unchanged") ||
+        contains_ci(text, "missing 0")) {
+        if (g_verify) {
+            set_status("Checking");
+        } else if (g_lang_only) {
+            set_status("Downloading language");
+        } else {
+            set_status("Using cached game files");
+        }
+        return;
+    }
+    if (contains_ci(text, "depot complete")) {
+        set_status(g_verify ? "Finishing check" : "Finishing");
+        return;
+    }
+    if (contains_ci(text, "processing depot") || contains_ci(text, "downloading depot")) {
+        set_status(g_verify ? "Checking files" : "Downloading");
         return;
     }
     if (contains_ci(text, "receiving objects")) {
-        set_status("Downloading mission scripts...");
+        set_status("Getting scripts");
         return;
     }
     if (contains_ci(text, "resolving deltas")) {
-        set_status("Updating mission scripts...");
+        set_status("Updating scripts");
         return;
     }
     if (contains_ci(text, "checking out files") || contains_ci(text, "updating files")) {
-        set_status("Installing mission scripts...");
+        set_status("Installing scripts");
         return;
     }
     {
@@ -1576,7 +2774,7 @@ scan_output(const char *text)
         }
     }
     if (contains_ci(text, "retry") || contains_ci(text, "reconnect")) {
-        set_status("Reconnecting...");
+        set_status("Reconnecting");
     }
 }
 
@@ -1669,6 +2867,7 @@ start_child(const char *command, const char *work, int show_window, const char *
         return 0;
     }
     if (pid == 0) {
+        setpgid(0, 0);
         dup2(out_pipe[1], STDOUT_FILENO);
         dup2(out_pipe[1], STDERR_FILENO);
         dup2(in_pipe[0], STDIN_FILENO);
@@ -1682,18 +2881,26 @@ start_child(const char *command, const char *work, int show_window, const char *
         execl("/bin/sh", "sh", "-c", command, (char *)NULL);
         _exit(127);
     }
+    setpgid(pid, pid);
     close(out_pipe[1]);
     close(in_pipe[0]);
     g_process = pid;
     (void)show_window;
 #endif
+    g_cancel = 0;
     g_busy = 1;
     g_phase = INSTALL_RUNNING;
     return 1;
 }
 
-static int start_dawn(void);
+static void queue_dawn(void);
+static void advance_dawn(void);
+static void apply_remove(void);
 static int collect_wipe_cb(const char *name, int is_dir, void *user);
+static void repair_vc_runtimes(const char *dir);
+static int start_depot_repair(void);
+static int purge_zeroed_sidecars(const char *dir, const char *list_path);
+static int sku_config_ok(const char *dir);
 
 static int
 complete_install(void)
@@ -1704,17 +2911,25 @@ complete_install(void)
     g_phase = INSTALL_OK;
     g_depot_progress = 1.0f;
     mark_installed();
+    repair_vc_runtimes(g_dir);
+    remove_steam_appid(g_dir);
+    preserve_depot_cache();
+    purge_zeroed_sidecars(g_dir, NULL);
+    if (!sku_config_ok(g_dir) && start_depot_repair()) {
+        return 1;
+    }
     if (game_root_ok(g_dir) && dawn_ready(g_dir)) {
         g_installed = 1;
-        set_status(g_verify ? "Game files verified" : "Dawn is ready");
+        set_status(g_verify ? "Files verified" : "Dawn is ready");
     } else if (game_root_ok(g_dir)) {
         g_installed = 0;
-        set_status("Game files are in, Dawn is still missing");
+        set_status("Need Dawn overlay");
     } else {
         g_installed = 0;
-        set_status("Install is incomplete");
+        set_status("Install incomplete");
     }
     g_verify = 0;
+    g_user_start = 0;
     clear_secret();
     return 1;
 }
@@ -1754,6 +2969,9 @@ start_steam_session(void)
     os_mkdirs(dest);
     file = fopen(list, "wb");
     if (file) {
+        /* A non-empty list that matches nothing. An empty list makes DepotDownloader
+         * download the whole depot after login. */
+        fputs("dawn-steam-login-only\n", file);
         fclose(file);
     }
     snprintf(
@@ -1771,18 +2989,41 @@ start_steam_session(void)
     );
     g_session_job = 1;
     g_session_tried = 1;
-    if (!start_child(command, work, 0, "Could not start Steam downloader login")) {
+    if (!start_child(command, work, 0, "Steam login failed")) {
         g_session_job = 0;
         return 0;
     }
-    set_status("Connecting Steam for downloads...");
+    set_status("Connecting Steam");
     return 1;
+}
+
+static void
+begin_depot_login(void)
+{
+    if (g_busy) {
+        return;
+    }
+    bind_steam_identity();
+    g_setup_creds = 1;
+    g_session_ready = 0;
+    g_session_tried = 0;
+    g_cancel = 0;
+    if (!g_user[0]) {
+        g_need = INSTALL_NEED_ACCOUNT;
+        set_status("Enter Steam username");
+        return;
+    }
+    g_need = INSTALL_NEED_PASSWORD;
+    set_status("Enter password");
 }
 
 static void
 maybe_prepare_session(void)
 {
-    if (g_busy || g_session_ready || g_session_tried) {
+    if (g_busy || g_cancel || g_setup_creds || g_need != INSTALL_NEED_NONE) {
+        return;
+    }
+    if (g_session_ready || g_session_tried) {
         return;
     }
     if (!steam_auth_signed_in()) {
@@ -1805,30 +3046,123 @@ start_depot(void)
     g_step = STEP_DEPOT_CONTENT;
     bind_steam_identity();
     if (!g_user[0]) {
-        fail_job("Steam account name is missing");
+        fail_job("No Steam username");
         return 0;
     }
 
-    snprintf(
-        command,
-        sizeof(command),
-        "\"%s\" -app %s -depot %s %s -manifest %s %s -dir \"%s\" -username \"%s\" "
-        "-remember-password -os windows -osarch 64 -validate -max-servers 20 -max-downloads 16",
-        g_tool,
-        INSTALL_APP,
-        INSTALL_DEPOT_CONTENT,
-        INSTALL_DEPOT_LANG,
-        INSTALL_MANIFEST_CONTENT,
-        INSTALL_MANIFEST_LANG,
-        g_dir,
-        g_user
-    );
+    if (g_filelist[0] && file_exists(g_filelist)) {
+        snprintf(
+            command,
+            sizeof(command),
+            "\"%s\" -app %s -depot %s -manifest %s -dir \"%s\" -filelist \"%s\" "
+            "-username \"%s\" -remember-password -os windows -osarch 64 "
+            "-max-servers 32 -max-downloads 32",
+            g_tool,
+            INSTALL_APP,
+            INSTALL_DEPOT_CONTENT,
+            INSTALL_MANIFEST_CONTENT,
+            g_dir,
+            g_filelist,
+            g_user
+        );
+    } else if (g_lang_only) {
+        snprintf(
+            command,
+            sizeof(command),
+            "\"%s\" -app %s -depot %s -manifest %s -dir \"%s\" -username \"%s\" "
+            "-remember-password -os windows -osarch 64 "
+            "%s-max-servers 32 -max-downloads 32",
+            g_tool,
+            INSTALL_APP,
+            lang_depot(),
+            lang_manifest(),
+            g_dir,
+            g_user,
+            g_verify ? "-validate " : ""
+        );
+    } else {
+        snprintf(
+            command,
+            sizeof(command),
+            "\"%s\" -app %s -depot %s %s -manifest %s %s -dir \"%s\" -username \"%s\" "
+            "-remember-password -os windows -osarch 64 "
+            "%s-max-servers 32 -max-downloads 32",
+            g_tool,
+            INSTALL_APP,
+            INSTALL_DEPOT_CONTENT,
+            lang_depot(),
+            INSTALL_MANIFEST_CONTENT,
+            lang_manifest(),
+            g_dir,
+            g_user,
+            g_verify ? "-validate " : ""
+        );
+    }
 
     depot_work_dir(work, MAX_PATH);
-    if (!start_child(command, work, 0, "DepotDownloader failed to start")) {
+    set_work_status();
+    if (!start_child(command, work, 0, "Downloader failed")) {
         return 0;
     }
-    set_status(g_verify ? "Checking Destiny 2 files..." : "Downloading Destiny 2 depots...");
+    return 1;
+}
+
+static int
+start_missing_language(int launch_after)
+{
+    if (language_depot_present(g_dir)) {
+        return 0;
+    }
+    bind_steam_identity();
+    if (!g_user[0] || !find_tool()) {
+        set_status("Need Steam login for language");
+        return 0;
+    }
+    g_lang_only = 1;
+    g_launch_after = launch_after;
+    g_user_start = 1;
+    g_filelist[0] = '\0';
+    g_verify = 0;
+    g_phase = INSTALL_RUNNING;
+    if (!start_depot()) {
+        g_lang_only = 0;
+        g_launch_after = 0;
+        return 0;
+    }
+    set_status("Downloading language");
+    return 1;
+}
+
+static int
+start_depot_repair(void)
+{
+    char work[MAX_PATH];
+    char list[MAX_PATH];
+
+    g_filelist[0] = '\0';
+    bind_steam_identity();
+    if (!g_user[0] || !find_tool()) {
+        return 0;
+    }
+    depot_work_dir(work, MAX_PATH);
+    if (!os_join(list, sizeof(list), work, "repair-files.txt")) {
+        return 0;
+    }
+    os_mkdirs(work);
+    purge_zeroed_sidecars(g_dir, list);
+    remove_steam_appid(g_dir);
+    if (!file_exists(list) || os_file_size(list) == 0) {
+        return sku_config_ok(g_dir);
+    }
+    snprintf(g_filelist, sizeof(g_filelist), "%s", list);
+    g_verify = 0;
+    g_user_start = 1;
+    g_phase = INSTALL_RUNNING;
+    if (!start_depot()) {
+        g_filelist[0] = '\0';
+        return 0;
+    }
+    set_status("Repairing game files");
     return 1;
 }
 
@@ -2025,6 +3359,11 @@ find_bundled_dawn(char *out, size_t max)
         find_dawn_payload(mid, out, max)) {
         return 1;
     }
+    if (os_join(path, sizeof(path), g_root, "payload") &&
+        os_join(mid, sizeof(mid), path, "dawn") &&
+        find_dawn_payload(mid, out, max)) {
+        return 1;
+    }
 #ifdef _WIN32
     if (copy_env("LOCALAPPDATA", cache, sizeof(cache)) &&
         os_join(mid, sizeof(mid), cache, "DawnInstaller") &&
@@ -2045,6 +3384,66 @@ find_bundled_dawn(char *out, size_t max)
     (void)cache;
 #endif
     return 0;
+}
+
+static int
+dawn_asset_ok(const char *url)
+{
+    if (!url || !contains_ci(url, ".zip")) {
+        return 0;
+    }
+    if (contains_ci(url, "sha256") || contains_ci(url, "source")) {
+        return 0;
+    }
+    return 1;
+}
+
+static void
+tag_from_download_url(const char *url, char *tag, size_t tag_max)
+{
+    const char *p;
+    const char *slash;
+    size_t n;
+
+    if (!url || !tag || tag_max < 2) {
+        return;
+    }
+    p = strstr(url, "/download/");
+    if (!p) {
+        return;
+    }
+    p += 10;
+    slash = strchr(p, '/');
+    if (!slash || slash <= p) {
+        return;
+    }
+    n = (size_t)(slash - p);
+    if (n >= tag_max) {
+        n = tag_max - 1;
+    }
+    memcpy(tag, p, n);
+    tag[n] = '\0';
+}
+
+static int
+curl_to_file(const char *url, const char *dest, const char *work)
+{
+    char curl[MAX_PATH];
+    char command[2048];
+
+    if (!url || !dest) {
+        return 0;
+    }
+    find_curl(curl, sizeof(curl));
+    snprintf(
+        command,
+        sizeof(command),
+        "\"%s\" -fsSL --retry 2 -L -A DawnLauncher/1.0 -o \"%s\" \"%s\"",
+        curl,
+        dest,
+        url
+    );
+    return run_hidden(command, work, 30000);
 }
 
 static int
@@ -2110,16 +3509,25 @@ json_find_dawn_zip(const char *path, char *url, size_t url_max, char *tag, size_
             }
             memcpy(found, q + 1, n);
             found[n] = '\0';
-            if (!contains_ci(found, ".zip") || contains_ci(found, "sha256") || contains_ci(found, "source")) {
+            if (!dawn_asset_ok(found)) {
                 continue;
             }
-            if (contains_ci(found, "Dawn-") || contains_ci(found, "/Dawn")) {
-                best = p;
+            if (contains_ci(found, "Dawn-") ||
+                contains_ci(found, "/Dawn/") ||
+                contains_ci(found, "Hotfix") ||
+                contains_ci(found, "0.1.")) {
                 snprintf(url, url_max, "%s", found);
+                if (tag && tag[0] == '\0') {
+                    tag_from_download_url(found, tag, tag_max);
+                }
+                best = p;
                 break;
             }
             if (!best) {
                 snprintf(url, url_max, "%s", found);
+                if (tag && tag[0] == '\0') {
+                    tag_from_download_url(found, tag, tag_max);
+                }
                 best = p;
             }
         }
@@ -2129,34 +3537,295 @@ json_find_dawn_zip(const char *path, char *url, size_t url_max, char *tag, size_
 }
 
 static int
-fetch_dawn_zip_url(void)
+html_find_dawn_zip(const char *path, char *url, size_t url_max, char *tag, size_t tag_max)
+{
+    FILE *file;
+    char *buf;
+    long size;
+    const char *p;
+    char found[1024];
+    int ok = 0;
+
+    file = fopen(path, "rb");
+    if (!file) {
+        return 0;
+    }
+    fseek(file, 0, SEEK_END);
+    size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    if (size <= 0 || size > 2 * 1024 * 1024) {
+        fclose(file);
+        return 0;
+    }
+    buf = (char *)malloc((size_t)size + 1);
+    if (!buf) {
+        fclose(file);
+        return 0;
+    }
+    if (fread(buf, 1, (size_t)size, file) != (size_t)size) {
+        free(buf);
+        fclose(file);
+        return 0;
+    }
+    fclose(file);
+    buf[size] = '\0';
+    for (p = buf; (p = strstr(p, "/releases/download/")) != NULL; p += 19) {
+        const char *start = p;
+        const char *end;
+        size_t n;
+
+        while (start > buf && start[-1] != '"' && start[-1] != '\'') {
+            start--;
+            if (p - start > 80) {
+                start = p;
+                break;
+            }
+        }
+        end = strstr(p, ".zip");
+        if (!end) {
+            continue;
+        }
+        end += 4;
+        n = (size_t)(end - start);
+        if (n < 16 || n >= sizeof(found)) {
+            continue;
+        }
+        memcpy(found, start, n);
+        found[n] = '\0';
+        if (!dawn_asset_ok(found)) {
+            continue;
+        }
+        if (found[0] == '/') {
+            snprintf(url, url_max, "https://github.com%s", found);
+        } else {
+            snprintf(url, url_max, "%s", found);
+        }
+        if (tag && tag_max > 1 && tag[0] == '\0') {
+            tag_from_download_url(url, tag, tag_max);
+        }
+        ok = 1;
+        break;
+    }
+    free(buf);
+    return ok && url && url[0] != '\0';
+}
+
+static int
+fetch_dawn_from_github(void)
 {
     char work[MAX_PATH];
     char meta[MAX_PATH];
-    char curl[MAX_PATH];
-    char command[2048];
 
     g_dawn_zip_url[0] = '\0';
     g_dawn_tag[0] = '\0';
     depot_work_dir(work, MAX_PATH);
-    if (!os_join(meta, sizeof(meta), work, "dawn-latest.json")) {
-        return 0;
-    }
-    find_curl(curl, sizeof(curl));
-    snprintf(
-        command,
-        sizeof(command),
-        "\"%s\" -fsSL --retry 3 -A DawnLauncher/1.0 -o \"%s\" \"%s\"",
-        curl,
-        meta,
-        DAWN_RELEASES_API
-    );
-    if (run_hidden(command, work, 30000) && json_find_dawn_zip(meta, g_dawn_zip_url, sizeof(g_dawn_zip_url), g_dawn_tag, sizeof(g_dawn_tag))) {
+    if (os_join(meta, sizeof(meta), work, "dawn-latest.json") &&
+        curl_to_file(DAWN_RELEASES_API, meta, work) &&
+        json_find_dawn_zip(meta, g_dawn_zip_url, sizeof(g_dawn_zip_url), g_dawn_tag, sizeof(g_dawn_tag))) {
         return 1;
     }
+    if (os_join(meta, sizeof(meta), work, "dawn-latest.html") &&
+        curl_to_file(DAWN_RELEASES_LATEST_HTML, meta, work) &&
+        html_find_dawn_zip(meta, g_dawn_zip_url, sizeof(g_dawn_zip_url), g_dawn_tag, sizeof(g_dawn_tag))) {
+        return 1;
+    }
+    if (os_join(meta, sizeof(meta), work, "dawn-releases.html") &&
+        curl_to_file(DAWN_RELEASES_HTML, meta, work) &&
+        html_find_dawn_zip(meta, g_dawn_zip_url, sizeof(g_dawn_zip_url), g_dawn_tag, sizeof(g_dawn_tag))) {
+        return 1;
+    }
+    return 0;
+}
+
+static void
+use_dawn_fallback_url(void)
+{
     snprintf(g_dawn_zip_url, sizeof(g_dawn_zip_url), "%s", DAWN_FALLBACK_ZIP);
-    snprintf(g_dawn_tag, sizeof(g_dawn_tag), "0.1.3");
+    if (g_dawn_tag[0] == '\0') {
+        snprintf(g_dawn_tag, sizeof(g_dawn_tag), "0.1.3");
+    }
+}
+
+static int
+pe_is_amd64(const char *path)
+{
+    FILE *file;
+    unsigned char buf[64];
+    unsigned int pe;
+
+    file = fopen(path, "rb");
+    if (!file) {
+        return 0;
+    }
+    if (fread(buf, 1, sizeof(buf), file) != sizeof(buf)) {
+        fclose(file);
+        return 0;
+    }
+    fclose(file);
+    if (buf[0] != 'M' || buf[1] != 'Z') {
+        return 0;
+    }
+    pe = (unsigned int)buf[0x3c] | ((unsigned int)buf[0x3d] << 8) |
+        ((unsigned int)buf[0x3e] << 16) | ((unsigned int)buf[0x3f] << 24);
+    if (pe < 4 || pe > (1u << 20)) {
+        return 0;
+    }
+    file = fopen(path, "rb");
+    if (!file || fseek(file, (long)pe, SEEK_SET) != 0) {
+        if (file) {
+            fclose(file);
+        }
+        return 0;
+    }
+    if (fread(buf, 1, 6, file) != 6) {
+        fclose(file);
+        return 0;
+    }
+    fclose(file);
+    return buf[0] == 'P' && buf[1] == 'E' && buf[2] == 0 && buf[3] == 0 &&
+        buf[4] == 0x64 && buf[5] == 0x86;
+}
+
+static void
+repair_named_vc_dll(const char *dir, const char *name)
+{
+#ifdef _WIN32
+    char local[MAX_PATH];
+    char sysdir[MAX_PATH];
+    char src[MAX_PATH];
+    UINT n;
+
+    if (!os_join(local, sizeof(local), dir, name) || !file_exists(local) || pe_is_amd64(local)) {
+        return;
+    }
+    n = GetSystemDirectoryA(sysdir, (UINT)sizeof(sysdir));
+    if (n == 0 || n >= sizeof(sysdir) || !os_join(src, sizeof(src), sysdir, name) || !pe_is_amd64(src)) {
+        os_delete_file(local);
+        return;
+    }
+    os_delete_file(local);
+    os_copy_file(src, local);
+#else
+    (void)dir;
+    (void)name;
+#endif
+}
+
+static int
+file_is_zero_head(const char *path)
+{
+    FILE *file;
+    unsigned char buf[32];
+    size_t n;
+    size_t i;
+
+    file = fopen(path, "rb");
+    if (!file) {
+        return 1;
+    }
+    n = fread(buf, 1, sizeof(buf), file);
+    fclose(file);
+    if (n == 0) {
+        return 1;
+    }
+    for (i = 0; i < n; i++) {
+        if (buf[i] != 0) {
+            return 0;
+        }
+    }
     return 1;
+}
+
+static int
+sku_config_ok(const char *dir)
+{
+    char path[MAX_PATH];
+
+    return os_join(path, sizeof(path), dir, "sku_config.txt") &&
+        file_exists(path) &&
+        os_file_size(path) > 0 &&
+        !file_is_zero_head(path);
+}
+
+typedef struct ZeroPurge {
+    const char *dir;
+    FILE *list;
+    int count;
+} ZeroPurge;
+
+static int
+zero_purge_cb(const char *name, int is_dir, void *user)
+{
+    ZeroPurge *st = (ZeroPurge *)user;
+    char path[MAX_PATH];
+
+    if (!name || is_dir || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        return 1;
+    }
+    if (!os_join(path, sizeof(path), st->dir, name) || !file_is_zero_head(path)) {
+        return 1;
+    }
+    if (st->list) {
+        fprintf(st->list, "%s\n", name);
+    }
+    os_delete_file(path);
+    st->count += 1;
+    return 1;
+}
+
+static int
+purge_zeroed_sidecars(const char *dir, const char *list_path)
+{
+    ZeroPurge st;
+    FILE *list = NULL;
+
+    if (!dir || !dir[0]) {
+        return 0;
+    }
+    if (list_path && list_path[0]) {
+        list = fopen(list_path, "wb");
+    }
+    st.dir = dir;
+    st.list = list;
+    st.count = 0;
+    os_list_dir(dir, zero_purge_cb, &st);
+    if (list) {
+        if (!sku_config_ok(dir)) {
+            fputs("sku_config.txt\n", list);
+        }
+        fclose(list);
+    }
+    return st.count;
+}
+
+static void
+repair_vc_runtimes(const char *dir)
+{
+    static const char *names[] = {
+        "vcruntime140.dll",
+        "vcruntime140_1.dll",
+        "msvcp140.dll",
+        "msvcp140_1.dll",
+        "msvcp140_2.dll",
+        "concrt140.dll",
+        "vccorlib140.dll",
+        NULL
+    };
+    char bin[MAX_PATH];
+    char nested[MAX_PATH];
+    int i;
+
+    if (!dir || !dir[0]) {
+        return;
+    }
+    for (i = 0; names[i]; i++) {
+        repair_named_vc_dll(dir, names[i]);
+    }
+    if (os_join(bin, sizeof(bin), dir, "bin") && os_join(nested, sizeof(nested), bin, "x64")) {
+        for (i = 0; names[i]; i++) {
+            repair_named_vc_dll(nested, names[i]);
+        }
+    }
 }
 
 static void
@@ -2187,7 +3856,13 @@ write_launch_scripts(const char *dir)
                 "for cand in \\\n"
                 "  \"$HOME/.local/share/Steam/steamapps/common/Proton - Experimental/proton\" \\\n"
                 "  \"$HOME/.local/share/Steam/steamapps/common/Proton 9.0/proton\" \\\n"
-                "  \"$HOME/.steam/steam/steamapps/common/Proton - Experimental/proton\"; do\n"
+                "  \"$HOME/.local/share/Steam/steamapps/common/Proton 8.0/proton\" \\\n"
+                "  \"$HOME/.steam/steam/steamapps/common/Proton - Experimental/proton\" \\\n"
+                "  \"$HOME/.steam/steam/steamapps/common/Proton 9.0/proton\" \\\n"
+                "  \"$HOME/.steam/steam/steamapps/common/Proton 8.0/proton\" \\\n"
+                "  \"$HOME/.steam/root/steamapps/common/Proton - Experimental/proton\" \\\n"
+                "  \"$HOME/.steam/root/steamapps/common/Proton 9.0/proton\" \\\n"
+                "  \"$HOME/.steam/root/steamapps/common/Proton 8.0/proton\"; do\n"
                 "  if [ -f \"$cand\" ]; then\n"
                 "    STEAM_ROOT=\"$(dirname \"$(dirname \"$(dirname \"$(dirname \"$cand\")\")\")\")\"\n"
                 "    export STEAM_COMPAT_CLIENT_INSTALL_PATH=\"$STEAM_ROOT\"\n"
@@ -2278,12 +3953,22 @@ patch_language_file(const char *settings, const char *lang)
         q = q ? strchr(q, '"') : NULL;
         if (q) {
             char *end = strchr(q + 1, '"');
-            if (end && (size_t)(end - (q + 1)) == strlen(lang)) {
-                memcpy(q + 1, lang, strlen(lang));
-                file = fopen(settings, "wb");
-                if (file) {
-                    fwrite(buf, 1, (size_t)size, file);
-                    fclose(file);
+            if (end) {
+                size_t prefix = (size_t)(q + 1 - buf);
+                size_t suffix = (size_t)((buf + size) - end);
+                size_t lang_len = strlen(lang);
+                size_t new_size = prefix + lang_len + suffix;
+                char *out = (char *)malloc(new_size);
+                if (out) {
+                    memcpy(out, buf, prefix);
+                    memcpy(out + prefix, lang, lang_len);
+                    memcpy(out + prefix + lang_len, end, suffix);
+                    file = fopen(settings, "wb");
+                    if (file) {
+                        fwrite(out, 1, new_size, file);
+                        fclose(file);
+                    }
+                    free(out);
                 }
             }
         }
@@ -2310,85 +3995,6 @@ set_dawn_language(const char *dir, const char *lang)
         patch_language_file(settings, lang);
     }
 }
-
-#ifdef _WIN32
-static void
-apply_windowed_fullscreen(void)
-{
-    char appdata[MAX_PATH];
-    char mid[MAX_PATH];
-    char prefs[MAX_PATH];
-    char path[MAX_PATH];
-    char *buf;
-    FILE *file;
-    long size;
-    char *mode;
-    const char *seed =
-        "<?xml version=\"1.0\"?><body><namespace name=\"graphics\"><cvar name=\"window_mode\" value=\"2\" /></namespace></body>\r\n";
-
-    if (!copy_env("APPDATA", appdata, sizeof(appdata)) ||
-        !os_join(mid, sizeof(mid), appdata, "Bungie") ||
-        !os_join(prefs, sizeof(prefs), mid, "DestinyPC") ||
-        !os_join(mid, sizeof(mid), prefs, "prefs") ||
-        !os_join(path, sizeof(path), mid, "cvars.xml")) {
-        return;
-    }
-    os_mkdirs(mid);
-    if (!file_exists(path)) {
-        file = fopen(path, "wb");
-        if (file) {
-            fputs(seed, file);
-            fclose(file);
-        }
-        return;
-    }
-    file = fopen(path, "rb");
-    if (!file) {
-        return;
-    }
-    fseek(file, 0, SEEK_END);
-    size = ftell(file);
-    fseek(file, 0, SEEK_SET);
-    if (size <= 0 || size > 1024 * 1024) {
-        fclose(file);
-        return;
-    }
-    buf = (char *)malloc((size_t)size + 1);
-    if (!buf) {
-        fclose(file);
-        return;
-    }
-    if (fread(buf, 1, (size_t)size, file) != (size_t)size) {
-        free(buf);
-        fclose(file);
-        return;
-    }
-    fclose(file);
-    buf[size] = '\0';
-    mode = strstr(buf, "name=\"window_mode\"");
-    if (!mode) {
-        mode = strstr(buf, "name='window_mode'");
-    }
-    if (mode) {
-        char *val = strstr(mode, "value=\"");
-        if (!val || val > mode + 80) {
-            val = strstr(mode, "value='");
-        }
-        if (val && val < mode + 80) {
-            char *q = val + 7;
-            if (*q && *q != '"' && *q != '\'') {
-                *q = '2';
-            }
-            file = fopen(path, "wb");
-            if (file) {
-                fwrite(buf, 1, (size_t)size, file);
-                fclose(file);
-            }
-        }
-    }
-    free(buf);
-}
-#endif
 
 static int
 write_dawn_receipt(const char *dir, const char *payload)
@@ -2448,20 +4054,17 @@ deploy_dawn(const char *payload)
     char dest_root_dll[MAX_PATH];
     char src_dawn[MAX_PATH];
 
-    int fresh;
-
     if (!payload_looks_good(payload)) {
         return 0;
     }
     if (destiny2_running()) {
-        fail_job("Close Destiny 2 before installing Dawn");
+        fail_job("Close Destiny 2 first");
         return 0;
     }
     if (!game_root_ok(g_dir)) {
-        fail_job("Game folder is not Destiny 2 build 86657");
+        fail_job("Not build 86657");
         return 0;
     }
-    fresh = !dawn_ready(g_dir);
     backup_stock_steam_dll(g_dir);
     if (!os_join(src_dawn, sizeof(src_dawn), payload, "Dawn") ||
         !os_join(dest_dawn, sizeof(dest_dawn), g_dir, "Dawn") ||
@@ -2481,24 +4084,19 @@ deploy_dawn(const char *payload)
     }
     write_dawn_receipt(g_dir, payload);
     write_launch_scripts(g_dir);
-    set_dawn_language(g_dir, "english");
-#ifdef _WIN32
-    if (fresh) {
-        apply_windowed_fullscreen();
-    }
-#else
-    (void)fresh;
-#endif
+    set_dawn_language(g_dir, lang_steam());
+    repair_vc_runtimes(g_dir);
+    remove_steam_appid(g_dir);
+    purge_zeroed_sidecars(g_dir, NULL);
     return dawn_ready(g_dir);
 }
 
 static int
-unpack_dawn_zip(void)
+extract_dawn_zip(void)
 {
     char work[MAX_PATH];
     char zip[MAX_PATH];
     char unpack[MAX_PATH];
-    char payload[MAX_PATH];
     char command[2048];
 
     depot_work_dir(work, MAX_PATH);
@@ -2513,7 +4111,7 @@ unpack_dawn_zip(void)
     if (!run_hidden(command, work, 120000)) {
         return 0;
     }
-    return find_dawn_payload(unpack, payload, sizeof(payload)) && deploy_dawn(payload);
+    return find_dawn_payload(unpack, g_dawn_payload, sizeof(g_dawn_payload));
 }
 
 static int
@@ -2530,7 +4128,7 @@ start_dawn_zip(void)
     }
     depot_work_dir(work, MAX_PATH);
     if (!os_join(zip, sizeof(zip), work, "dawn-release.zip")) {
-        fail_job("Dawn folder is invalid");
+        fail_job("Dawn folder invalid");
         return 0;
     }
     find_curl(curl, sizeof(curl));
@@ -2542,65 +4140,208 @@ start_dawn_zip(void)
         zip,
         g_dawn_zip_url
     );
-    if (!start_child(command, work, 0, "Could not start Dawn download")) {
+    set_status("Downloading Dawn");
+    if (!start_child(command, work, 0, "Dawn download failed")) {
         return 0;
-    }
-    set_status(g_dawn_tag[0] ? "Downloading Dawn..." : "Downloading Dawn release...");
-    if (g_dawn_tag[0]) {
-        snprintf(g_status, sizeof(g_status), "Downloading Dawn %s...", g_dawn_tag);
     }
     return 1;
 }
 
+/*
+ * DepotDownloader flags a depot as done in depot.config the moment its last
+ * chunk lands, but the process itself can linger (final validation pass,
+ * CDN teardown). Poll that file at most once a second instead of listing
+ * thousands of package files every frame.
+ */
 static int
-start_dawn(void)
+depots_finished_throttled(void)
+{
+    static uint32_t last_check;
+    static int last_result;
+    uint32_t now = os_tick_ms();
+
+    if (last_check != 0 && (now - last_check) < 1000u) {
+        return last_result;
+    }
+    last_check = now;
+    last_result = depots_ready(g_dir);
+    return last_result;
+}
+
+static void
+finish_depot_from_files(void)
+{
+    int lang_only = g_lang_only;
+    int launch = g_launch_after;
+
+    stop_child_tree();
+    close_child();
+    g_busy = 0;
+    g_session_job = 0;
+    g_filelist[0] = '\0';
+    g_depot_progress = 1.0f;
+    g_lang_only = 0;
+    g_launch_after = 0;
+    write_marker(g_dir);
+    set_dawn_language(g_dir, lang_steam());
+    preserve_depot_cache();
+    if (lang_only && dawn_ready(g_dir)) {
+        g_phase = INSTALL_OK;
+        g_installed = 1;
+        g_user_start = 0;
+        repair_vc_runtimes(g_dir);
+        remove_steam_appid(g_dir);
+        clear_secret();
+        if (launch) {
+            if (!launch_game_tracked()) {
+                set_status("Dawn failed to start");
+            }
+        } else {
+            set_status("Dawn is ready");
+        }
+        return;
+    }
+    if (dawn_ready(g_dir)) {
+        complete_install();
+        return;
+    }
+    if (!g_user_start) {
+        g_busy = 0;
+        g_phase = INSTALL_IDLE;
+        set_status("Ready to install Dawn");
+        return;
+    }
+    queue_dawn();
+}
+
+static void
+queue_dawn(void)
+{
+    g_step = STEP_DAWN_RELEASE;
+    g_busy = 1;
+    g_phase = INSTALL_RUNNING;
+    g_dawn_next = DAWN_WORK_START;
+    set_status("Installing Dawn");
+}
+
+static void
+advance_dawn(void)
 {
     char payload[MAX_PATH];
 
-    g_step = STEP_DAWN_RELEASE;
-    if (dawn_ready(g_dir)) {
-        return complete_install();
+    if (g_cancel) {
+        g_dawn_next = DAWN_WORK_NONE;
+        return;
     }
-    set_status("Installing Dawn...");
-    if (find_bundled_dawn(payload, sizeof(payload)) && deploy_dawn(payload)) {
-        return complete_install();
+    switch (g_dawn_next) {
+    case DAWN_WORK_START:
+        set_status("Finding Dawn");
+        g_dawn_next = DAWN_WORK_FIND;
+        return;
+    case DAWN_WORK_FIND:
+        if (dawn_ready(g_dir)) {
+            set_status("Installing Dawn");
+            g_dawn_next = DAWN_WORK_FINISH;
+            return;
+        }
+        if (fetch_dawn_from_github()) {
+            g_dawn_next = DAWN_WORK_NONE;
+            start_dawn_zip();
+            return;
+        }
+        if (find_bundled_dawn(payload, sizeof(payload))) {
+            snprintf(g_dawn_payload, sizeof(g_dawn_payload), "%s", payload);
+            if (g_dawn_tag[0] == '\0') {
+                snprintf(g_dawn_tag, sizeof(g_dawn_tag), "0.1.3");
+            }
+            set_status("Installing Dawn");
+            g_dawn_next = DAWN_WORK_DEPLOY;
+            return;
+        }
+        use_dawn_fallback_url();
+        g_dawn_next = DAWN_WORK_NONE;
+        start_dawn_zip();
+        return;
+    case DAWN_WORK_EXTRACT:
+        set_status("Extracting Dawn");
+        if (extract_dawn_zip()) {
+            g_dawn_next = DAWN_WORK_DEPLOY;
+            return;
+        }
+        if (find_bundled_dawn(payload, sizeof(payload))) {
+            snprintf(g_dawn_payload, sizeof(g_dawn_payload), "%s", payload);
+            g_dawn_next = DAWN_WORK_DEPLOY;
+            return;
+        }
+        g_dawn_next = DAWN_WORK_NONE;
+        fail_job("Dawn extract failed");
+        return;
+    case DAWN_WORK_DEPLOY:
+        set_status("Installing Dawn");
+        if (g_dawn_payload[0] && deploy_dawn(g_dawn_payload)) {
+            g_dawn_next = DAWN_WORK_FINISH;
+            return;
+        }
+        if (find_bundled_dawn(payload, sizeof(payload)) && deploy_dawn(payload)) {
+            g_dawn_next = DAWN_WORK_FINISH;
+            return;
+        }
+        g_dawn_next = DAWN_WORK_NONE;
+        fail_job("Dawn install failed");
+        return;
+    case DAWN_WORK_FINISH:
+        g_dawn_next = DAWN_WORK_NONE;
+        complete_install();
+        return;
+    default:
+        g_dawn_next = DAWN_WORK_NONE;
+        break;
     }
-    if (!fetch_dawn_zip_url()) {
-        fail_job("Dawn release was not found");
-        return 0;
-    }
-    return start_dawn_zip();
 }
 
 static void
 finish_child(DWORD exit_code)
 {
     close_child();
-    if (g_session_job) {
+    if (g_cancel) {
+        g_cancel = 0;
+        g_busy = 0;
+        g_session_job = 0;
+        g_verify = 0;
+        g_need = INSTALL_NEED_NONE;
+        g_phase = INSTALL_IDLE;
+        set_status("Cancelled");
+        clear_secret();
+        return;
+    }
+    if (g_session_job || !g_user_start) {
         g_session_job = 0;
         g_busy = 0;
+        g_setup_creds = 0;
         g_need = INSTALL_NEED_NONE;
+        clear_secret();
         if (exit_code == 0) {
             g_session_ready = 1;
-            set_status("Steam is ready to download");
+            set_status("Ready to download");
         } else {
-            set_status("Steam downloader will sign in when you download");
+            set_status("Login saved");
         }
         return;
     }
     if (exit_code != 0) {
         if (g_step == STEP_DEPOT_CONTENT &&
             (contains_ci(g_log, "AccessDenied") || contains_ci(g_log, "401"))) {
-            fail_job("Steam denied depot access");
+            fail_job("Depot access denied");
+            return;
+        }
+        if (g_step == STEP_DEPOT_CONTENT && adopt_depot_root() && depots_ready(g_dir)) {
+            finish_depot_from_files();
             return;
         }
         if (g_step == STEP_DAWN_RELEASE) {
-            char payload[MAX_PATH];
-            if (find_bundled_dawn(payload, sizeof(payload)) && deploy_dawn(payload)) {
-                complete_install();
-                return;
-            }
-            fail_job("Dawn download failed");
+            set_status("Installing Dawn");
+            g_busy = 1;
+            g_dawn_next = DAWN_WORK_EXTRACT;
             return;
         }
         fail_job("Download failed");
@@ -2608,22 +4349,41 @@ finish_child(DWORD exit_code)
     }
 
     g_depot_progress = 1.0f;
+    g_filelist[0] = '\0';
     if (g_step == STEP_DEPOT_CONTENT) {
-        start_dawn();
+        set_dawn_language(g_dir, lang_steam());
+        write_marker(g_dir);
+        preserve_depot_cache();
+        if (g_lang_only) {
+            int launch = g_launch_after;
+            g_lang_only = 0;
+            g_launch_after = 0;
+            g_busy = 0;
+            g_phase = INSTALL_OK;
+            g_installed = dawn_ready(g_dir);
+            repair_vc_runtimes(g_dir);
+            remove_steam_appid(g_dir);
+            if (launch) {
+                if (!launch_game_tracked()) {
+                    set_status("Dawn failed to start");
+                }
+            } else if (g_installed) {
+                set_status("Dawn is ready");
+            } else {
+                queue_dawn();
+            }
+            return;
+        }
+        queue_dawn();
         return;
     }
     if (g_step == STEP_DAWN_RELEASE) {
-        if (!unpack_dawn_zip() && !dawn_ready(g_dir)) {
-            char payload[MAX_PATH];
-            if (!find_bundled_dawn(payload, sizeof(payload)) || !deploy_dawn(payload)) {
-                fail_job("Could not install Dawn onto the game folder");
-                return;
-            }
-        }
-        complete_install();
+        set_status("Extracting Dawn");
+        g_busy = 1;
+        g_dawn_next = DAWN_WORK_EXTRACT;
         return;
     }
-    start_dawn();
+    queue_dawn();
 }
 
 void
@@ -2633,8 +4393,10 @@ install_job_init(const char *project_root)
     memset(g_dir, 0, sizeof(g_dir));
     memset(g_user, 0, sizeof(g_user));
     memset(g_tool, 0, sizeof(g_tool));
+    g_filelist[0] = '\0';
     clear_secret();
     g_status[0] = '\0';
+    g_status_ms = 0;
     g_log[0] = '\0';
     g_log_len = 0;
     g_phase = INSTALL_IDLE;
@@ -2645,6 +4407,13 @@ install_job_init(const char *project_root)
     g_session_job = 0;
     g_session_ready = 0;
     g_session_tried = 0;
+    g_user_start = 0;
+    g_cancel = 0;
+    g_lang_only = 0;
+    g_launch_after = 0;
+    g_dawn_next = DAWN_WORK_NONE;
+    g_remove_next = REMOVE_NONE;
+    g_dawn_payload[0] = '\0';
     g_busy = 0;
     g_depot_progress = 0.0f;
     g_installed = 0;
@@ -2652,11 +4421,20 @@ install_job_init(const char *project_root)
     g_process = NULL;
     g_stdout_read = NULL;
     g_stdin_write = NULL;
+    g_game_proc = NULL;
+    g_game_pid = 0;
 #else
     g_process = 0;
     g_stdout_read = -1;
     g_stdin_write = -1;
+    g_game_pid = 0;
 #endif
+    g_game_launch_ms = 0;
+    g_game_state = 0;
+    g_d2_running = 0;
+    g_d2_running_ms = 0;
+    g_d2_window = 0;
+    g_d2_window_ms = 0;
     if (project_root && project_root[0]) {
         snprintf(g_root, sizeof(g_root), "%s", project_root);
     }
@@ -2679,45 +4457,81 @@ install_job_shutdown(void)
     clear_secret();
 }
 
+static int
+is_container_folder(const char *dir)
+{
+    const char *base = path_base(dir);
+
+    return base &&
+        (os_stricmp(base, "Documents") == 0 ||
+         os_stricmp(base, "Desktop") == 0 ||
+         os_stricmp(base, "Downloads") == 0 ||
+         os_stricmp(base, "Users") == 0 ||
+         os_stricmp(base, "home") == 0 ||
+         os_stricmp(base, "Public") == 0);
+}
+
+static void
+normalize_install_dir(void)
+{
+    char nested[MAX_PATH];
+    size_t n;
+
+    if (!g_dir[0]) {
+        return;
+    }
+    n = strlen(g_dir);
+    while (n > 3 && (g_dir[n - 1] == '/' || g_dir[n - 1] == '\\')) {
+        g_dir[--n] = '\0';
+    }
+    if (os_stricmp(path_base(g_dir), "Dawn") == 0) {
+        return;
+    }
+    {
+        char data[MAX_PATH];
+        os_data_dir(data, sizeof(data));
+        if (data[0] && os_strnicmp(g_dir, data, strlen(data)) == 0) {
+            if (os_stricmp(g_dir, data) == 0 && os_join(nested, sizeof(nested), data, "Destiny2")) {
+                snprintf(g_dir, sizeof(g_dir), "%s", nested);
+            }
+            return;
+        }
+    }
+    if (!is_container_folder(g_dir) && content_files_ready(g_dir)) {
+        return;
+    }
+    if (os_join(nested, sizeof(nested), g_dir, "Dawn")) {
+        snprintf(g_dir, sizeof(g_dir), "%s", nested);
+    }
+}
+
 void
 install_job_set_dir(const char *dir)
 {
-    char root[MAX_PATH];
-    size_t n;
-
     if (g_busy) {
-        set_status("Folder is locked while downloading");
+        set_status("Folder locked");
         return;
     }
     if (!dir || !dir[0]) {
         return;
     }
     snprintf(g_dir, sizeof(g_dir), "%s", dir);
-    n = strlen(g_dir);
-    while (n > 3 && (g_dir[n - 1] == '/' || g_dir[n - 1] == '\\')) {
-        g_dir[--n] = '\0';
-    }
+    normalize_install_dir();
     g_dir_pinned = 1;
     os_mkdirs(g_dir);
     persist_dir();
-    g_installed_check = 0;
-    g_scan_check = 0;
-    if (is_live_latest_d2(g_dir)) {
-        g_installed = 0;
-        set_status("This folder is a live Destiny 2 install, not the 86657 files Dawn needs");
+    invalidate_install_ready();
+    if (is_live_latest_d2(g_dir) && !dawn_depots_present(g_dir)) {
+        set_status("Live D2 folder, not 86657");
         return;
     }
-    if (game_root_in(g_dir, root, sizeof(root))) {
-        if (os_stricmp(g_dir, root) != 0) {
-            snprintf(g_dir, sizeof(g_dir), "%s", root);
-            persist_dir();
-        }
-        g_installed = dawn_ready(g_dir);
-        set_status(g_installed ? "Dawn is ready" : "Game files found, Dawn is not installed yet");
-    } else {
-        g_installed = 0;
-        set_status("Download folder updated");
+    if (install_complete(g_dir)) {
+        g_installed = 1;
+        set_status("Dawn is ready");
+        return;
     }
+    g_installed = 0;
+    set_status("Folder set");
 }
 
 const char *
@@ -2734,15 +4548,36 @@ install_job_set_user(const char *username)
         return;
     }
     snprintf(g_user, sizeof(g_user), "%s", username);
+    if (g_user[0]) {
+        steam_auth_set_dd_user(g_user);
+    }
 }
 
 void
 install_job_submit_secret(const char *text)
 {
-    if (!text) {
+    if (!text || !text[0]) {
+        return;
+    }
+    if (g_need == INSTALL_NEED_ACCOUNT) {
+        install_job_set_user(text);
+        clear_secret();
+        g_need = INSTALL_NEED_PASSWORD;
+        set_status("Enter password");
         return;
     }
     snprintf(g_secret, sizeof(g_secret), "%s", text);
+    if (g_setup_creds && !g_busy) {
+        g_setup_creds = 0;
+        g_need = INSTALL_NEED_NONE;
+        bind_steam_identity();
+        if (!g_user[0] || !start_steam_session()) {
+            g_setup_creds = 1;
+            g_need = g_user[0] ? INSTALL_NEED_PASSWORD : INSTALL_NEED_ACCOUNT;
+            set_status(g_user[0] ? "Steam login failed" : "Enter Steam username");
+        }
+        return;
+    }
     if (g_busy && g_need != INSTALL_NEED_NONE) {
         send_secret();
     }
@@ -2754,93 +4589,169 @@ install_job_start(void)
     if (g_busy) {
         return 0;
     }
+    g_user_start = 1;
     bind_steam_identity();
-    if (g_dir[0] && is_live_latest_d2(g_dir)) {
-        set_status("This folder is a live Destiny 2 install, not the 86657 files Dawn needs");
+    normalize_install_dir();
+    os_mkdirs(g_dir);
+    persist_dir();
+    if (g_dir[0] && is_live_latest_d2(g_dir) && !dawn_depots_present(g_dir)) {
+        set_status("Live D2 folder, not 86657");
         g_phase = INSTALL_FAILED;
-        g_installed = 0;
+        invalidate_install_ready();
         return 0;
     }
-    if (g_dir[0] && game_root_ok(g_dir) && dawn_ready(g_dir)) {
+    if (install_complete(g_dir)) {
         g_phase = INSTALL_OK;
         g_installed = 1;
-        set_status("Dawn is already installed");
+        set_status("Already installed");
         return 1;
     }
-    if (g_dir[0] && game_root_in(g_dir, NULL, 0)) {
-        return start_dawn();
+    if (depots_ready(g_dir)) {
+        finish_depot_from_files();
+        return 1;
+    }
+    if (apply_cached_install()) {
+        if (depots_ready(g_dir)) {
+            finish_depot_from_files();
+            return 1;
+        }
+        if (install_complete(g_dir)) {
+            g_phase = INSTALL_OK;
+            g_installed = 1;
+            g_depot_progress = 1.0f;
+            set_status("Using cached game files");
+            return 1;
+        }
+        if (content_depot_present(g_dir)) {
+            set_status("Using cached game files");
+            if (!steam_auth_signed_in()) {
+                set_status("Sign in first");
+                g_phase = INSTALL_FAILED;
+                return 0;
+            }
+            if (start_missing_language(0)) {
+                return 1;
+            }
+            set_status("Need Steam login for language");
+            g_phase = INSTALL_FAILED;
+            return 0;
+        }
     }
     if (!steam_auth_signed_in()) {
-        set_status("Sign in with Steam first");
+        set_status("Sign in first");
         g_phase = INSTALL_FAILED;
         return 0;
     }
     if (steam_auth_owns_d2() == 0) {
-        set_status("Destiny 2 is not on this Steam account");
+        set_status("No Destiny 2 license");
         g_phase = INSTALL_FAILED;
         return 0;
     }
     bind_steam_identity();
     if (g_user[0] == '\0') {
-        set_status("Steam account name is missing");
+        set_status("No Steam username");
         g_phase = INSTALL_FAILED;
         return 0;
     }
     if (g_dir[0] == '\0') {
-        set_status("Install folder is missing");
+        set_status("No install folder");
         g_phase = INSTALL_FAILED;
         return 0;
     }
     if (!find_tool()) {
-        set_status("DepotDownloader is missing in tools/");
+        set_status("DepotDownloader missing");
         g_phase = INSTALL_FAILED;
         return 0;
     }
 
     g_phase = INSTALL_RUNNING;
+    g_filelist[0] = '\0';
     return start_depot();
 }
 
 void
 install_job_cancel(void)
 {
-#ifdef _WIN32
-    if (g_process) {
-        TerminateProcess(g_process, 1);
+    if (g_remove_next) {
+        return;
     }
-#else
-    if (g_process > 0) {
-        kill(g_process, SIGTERM);
-        waitpid(g_process, NULL, 0);
+    if (!g_busy && g_phase != INSTALL_RUNNING && g_need == INSTALL_NEED_NONE) {
+        return;
     }
-#endif
+    g_cancel = 1;
+    stop_child_tree();
     close_child();
     g_busy = 0;
     g_session_job = 0;
+    g_user_start = 0;
+    g_setup_creds = 0;
     g_verify = 0;
+    g_lang_only = 0;
+    g_launch_after = 0;
+    g_dawn_next = DAWN_WORK_NONE;
     g_need = INSTALL_NEED_NONE;
-    if (g_phase == INSTALL_RUNNING) {
-        g_phase = INSTALL_IDLE;
-        set_status("Cancelled");
-    }
+    g_phase = INSTALL_IDLE;
+    g_depot_progress = 0.0f;
+    g_cancel = 0;
+    invalidate_install_ready();
+    set_status("Cancelled");
     clear_secret();
 }
 
 void
 install_job_poll(void)
 {
-    bind_steam_identity();
+    poll_game();
+    expire_hold_status();
+    if (g_remove_next) {
+        apply_remove();
+        return;
+    }
+#ifdef _WIN32
+    if (g_dawn_next && !(g_busy && g_process)) {
+#else
+    if (g_dawn_next && !(g_busy && g_process > 0)) {
+#endif
+        static uint32_t last_dawn;
+        uint32_t now = os_tick_ms();
+        if (last_dawn != 0 && (now - last_dawn) < 180u) {
+            return;
+        }
+        last_dawn = now;
+        advance_dawn();
+        if (!g_dawn_next) {
+            last_dawn = 0;
+        }
+        return;
+    }
 #ifdef _WIN32
     if (!g_busy || !g_process) {
-        maybe_prepare_session();
-        return;
-    }
 #else
     if (!g_busy || g_process <= 0) {
+#endif
+        static uint32_t last_idle;
+        uint32_t now = os_tick_ms();
+        if (last_idle != 0 && (now - last_idle) < 50u) {
+            return;
+        }
+        last_idle = now;
+        bind_steam_identity();
+        if (steam_auth_consume_fresh_login()) {
+            begin_depot_login();
+        }
         maybe_prepare_session();
+        if (g_phase == INSTALL_RUNNING &&
+            g_user_start &&
+            !g_dawn_next &&
+            !g_remove_next &&
+            !g_verify &&
+            depots_finished_throttled() &&
+            !dawn_ready(g_dir)) {
+            finish_depot_from_files();
+        }
         return;
     }
-#endif
+    bind_steam_identity();
 
     char chunk[1024];
 #ifdef _WIN32
@@ -2858,6 +4769,9 @@ install_job_poll(void)
     }
 
     if (WaitForSingleObject(g_process, 0) == WAIT_TIMEOUT) {
+        if (g_step == STEP_DEPOT_CONTENT && !g_session_job && !g_verify && depots_finished_throttled()) {
+            finish_depot_from_files();
+        }
         return;
     }
 
@@ -2886,6 +4800,9 @@ install_job_poll(void)
     int status = 0;
     pid_t done = waitpid(g_process, &status, WNOHANG);
     if (done == 0) {
+        if (g_step == STEP_DEPOT_CONTENT && !g_session_job && !g_verify && depots_finished_throttled()) {
+            finish_depot_from_files();
+        }
         return;
     }
     DWORD exit_code = 1;
@@ -2899,7 +4816,7 @@ install_job_poll(void)
 int
 install_job_busy(void)
 {
-    return g_busy;
+    return g_busy || g_dawn_next != DAWN_WORK_NONE || g_remove_next != REMOVE_NONE;
 }
 
 int
@@ -2918,12 +4835,16 @@ install_job_progress(void)
     if (local > 1.0f) {
         local = 1.0f;
     }
-    return ((float)g_step + local) / 2.0f;
+    if (g_step == STEP_DAWN_RELEASE) {
+        return 0.97f + local * 0.03f;
+    }
+    return local * 0.97f;
 }
 
 const char *
 install_job_status(void)
 {
+    expire_hold_status();
     return g_status;
 }
 
@@ -2933,28 +4854,35 @@ install_job_ready(void)
     char root[MAX_PATH];
     uint32_t now;
 
-    if (g_busy) {
+    if (g_busy || g_dawn_next || g_remove_next) {
         return 0;
     }
     now = os_tick_ms();
-    if (g_installed_check != 0 && (now - g_installed_check) < 2500u) {
+    if (g_installed_check != 0 && (now - g_installed_check) < 4000u) {
         return g_installed;
     }
     g_installed_check = now;
-    if (g_dir[0] && game_root_in(g_dir, root, sizeof(root))) {
+    if (g_dir[0] && install_complete(g_dir)) {
+        g_installed = 1;
+        return 1;
+    }
+    if (g_dir[0] && game_root_in(g_dir, root, sizeof(root)) && install_complete(root)) {
         if (os_stricmp(g_dir, root) != 0) {
             snprintf(g_dir, sizeof(g_dir), "%s", root);
             persist_dir();
         }
-        g_installed = dawn_ready(g_dir);
-        return g_installed;
+        g_installed = 1;
+        return 1;
     }
-    if (g_scan_check != 0 && (now - g_scan_check) < 15000u) {
+    /* The disk walk visits up to WALK_BUDGET folders on the UI thread; run it
+     * once and then only after something invalidated the result (folder
+     * change, cancel, uninstall) or a long while later. */
+    if (g_scan_check != 0 && (now - g_scan_check) < 300000u) {
         g_installed = 0;
         return 0;
     }
     g_scan_check = now;
-    if (refresh_installed() && game_root_in(g_dir, NULL, 0) && dawn_ready(g_dir)) {
+    if (refresh_installed() && install_complete(g_dir)) {
         g_installed = 1;
         return 1;
     }
@@ -2966,40 +4894,81 @@ int
 install_job_launch(void)
 {
     char exe[MAX_PATH];
-    char cmd[MAX_PATH];
 
-#ifdef _WIN32
-    if (os_join(cmd, sizeof(cmd), g_dir, "launch-destiny.cmd") && file_exists(cmd)) {
-        if (!os_launch(cmd)) {
-            set_status("Could not start Dawn");
+    repair_vc_runtimes(g_dir);
+    remove_steam_appid(g_dir);
+    preserve_depot_cache();
+    purge_zeroed_sidecars(g_dir, NULL);
+    set_dawn_language(g_dir, lang_steam());
+    if (!language_depot_present(g_dir)) {
+        if (g_busy) {
+            set_status("Downloading language");
             return 0;
         }
-        set_status("Launching Dawn");
-        return 1;
+        if (start_missing_language(1)) {
+            return 1;
+        }
+        set_status("Need language depot");
+        return 0;
     }
-#else
-    if (os_join(cmd, sizeof(cmd), g_dir, "launch-destiny.sh") && file_exists(cmd)) {
-        if (!os_launch(cmd)) {
-            set_status("Could not start Dawn");
+    if (!sku_config_ok(g_dir)) {
+        if (g_busy) {
+            set_status("Repairing game files");
             return 0;
         }
-        set_status("Launching Dawn");
-        return 1;
+        if (!start_depot_repair()) {
+            set_status("Game files incomplete");
+            return 0;
+        }
+        return 0;
     }
-#endif
     if (!find_game_exe(exe, sizeof(exe))) {
         if (!g_installed) {
-            set_status("Dawn is not installed yet");
+            set_status("Dawn not installed");
             return 0;
         }
         snprintf(exe, sizeof(exe), "%s", g_dir);
     }
-    if (!os_launch(exe)) {
-        set_status("Could not start Dawn");
+    if (!launch_game_tracked()) {
+        set_status("Dawn failed to start");
         return 0;
     }
-    set_status("Launching Dawn");
     return 1;
+}
+
+int
+install_job_game_state(void)
+{
+    return g_game_state;
+}
+
+void
+install_job_game_stop(void)
+{
+    kill_destiny2();
+    clear_game_proc();
+    invalidate_game_scan();
+    g_game_state = 0;
+    set_status("Stopped");
+}
+
+void
+install_job_set_language(const char *steam)
+{
+    g_lang = lang_by_steam(steam);
+    persist_lang();
+}
+
+const char *
+install_job_language(void)
+{
+    return lang_steam();
+}
+
+const char *
+install_job_language_label(void)
+{
+    return game_language()->label;
 }
 
 static int
@@ -3044,8 +5013,18 @@ wipe_tree(const char *dir)
                 if (!wipe_tree(kids.path[i])) {
                     ok = 0;
                 }
-            } else if (!os_delete_file(kids.path[i])) {
-                ok = 0;
+            } else {
+#ifdef _WIN32
+                {
+                    DWORD attr = GetFileAttributesA(kids.path[i]);
+                    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY)) {
+                        SetFileAttributesA(kids.path[i], attr & ~FILE_ATTRIBUTE_READONLY);
+                    }
+                }
+#endif
+                if (!os_delete_file(kids.path[i])) {
+                    ok = 0;
+                }
             }
         }
         if (kids.count < WALK_CHILD_MAX) {
@@ -3064,13 +5043,239 @@ wipe_tree(const char *dir)
     return ok;
 }
 
+static int
+dir_has_child(const char *dir, const char *name)
+{
+    char path[MAX_PATH];
+
+    return dir && name && os_join(path, sizeof(path), dir, name) &&
+        (os_dir_exists(path) || file_exists(path));
+}
+
+static int
+dll_named(const char *dir, const char *product)
+{
+    char path[MAX_PATH];
+    uint64_t size;
+
+    if (!dawn_dll_path(dir, path, sizeof(path))) {
+        return 0;
+    }
+#ifdef _WIN32
+    (void)size;
+    return dll_product_is(path, product);
+#else
+    size = os_file_size(path);
+    if (os_stricmp(product, "Dawn") == 0) {
+        return size > 8ull * 1024ull * 1024ull && size < 50ull * 1024ull * 1024ull;
+    }
+    if (os_stricmp(product, "Sunrise") == 0) {
+        return size >= 50ull * 1024ull * 1024ull;
+    }
+    return 0;
+#endif
+}
+
+static int
+dawn_present(const char *dir)
+{
+    char settings[MAX_PATH];
+    char nested[MAX_PATH];
+
+    if (!dir || !dir[0]) {
+        return 0;
+    }
+    if (dawn_settings_in(dir, settings, sizeof(settings))) {
+        return 1;
+    }
+    if (dir_has_child(dir, "Dawn") ||
+        dir_has_child(dir, ".dawn") ||
+        dir_has_child(dir, "release.json") ||
+        dir_has_child(dir, "launch-destiny.cmd") ||
+        dir_has_child(dir, "launch-destiny.sh")) {
+        return 1;
+    }
+    if (join4(nested, sizeof(nested), dir, "bin", "x64", "Dawn") && os_dir_exists(nested)) {
+        return 1;
+    }
+    return dll_named(dir, "Dawn");
+}
+
+static int
+sunrise_present(const char *dir)
+{
+    char nested[MAX_PATH];
+
+    if (!dir || !dir[0]) {
+        return 0;
+    }
+    if (dir_has_child(dir, "Sunrise") || dir_has_child(dir, ".sunrise")) {
+        return 1;
+    }
+    if (join4(nested, sizeof(nested), dir, "bin", "x64", "Sunrise") && os_dir_exists(nested)) {
+        return 1;
+    }
+    return dll_named(dir, "Sunrise");
+}
+
+static const char *
+parts_dir(char *root, size_t max)
+{
+    if (g_dir[0] && game_root_in(g_dir, root, max)) {
+        return root;
+    }
+    return g_dir;
+}
+
 int
-install_job_uninstall(void)
+install_job_parts(void)
+{
+    char root[MAX_PATH];
+    const char *dir;
+    int parts = 0;
+
+    if (!g_dir[0] || !os_dir_exists(g_dir)) {
+        return 0;
+    }
+    dir = parts_dir(root, sizeof(root));
+    if (depots_ready(dir) || content_depot_present(dir) || content_files_ready(dir) ||
+        game_root_in(dir, NULL, 0)) {
+        parts |= INSTALL_PART_DEPOTS;
+    }
+    if (dawn_present(dir)) {
+        parts |= INSTALL_PART_DAWN;
+    }
+    if (sunrise_present(dir)) {
+        parts |= INSTALL_PART_SUNRISE;
+    }
+    return parts;
+}
+
+static int
+wipe_child(const char *dir, const char *name)
+{
+    char path[MAX_PATH];
+
+    if (!dir || !name || !os_join(path, sizeof(path), dir, name)) {
+        return 0;
+    }
+    if (os_dir_exists(path)) {
+        return wipe_tree(path);
+    }
+    if (file_exists(path)) {
+#ifdef _WIN32
+        {
+            DWORD attr = GetFileAttributesA(path);
+            if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY)) {
+                SetFileAttributesA(path, attr & ~FILE_ATTRIBUTE_READONLY);
+            }
+        }
+#endif
+        return os_delete_file(path);
+    }
+    return 1;
+}
+
+static void
+stop_auto_dawn(void)
+{
+    g_user_start = 0;
+    g_dawn_next = DAWN_WORK_NONE;
+    g_dawn_payload[0] = '\0';
+    g_verify = 0;
+    g_lang_only = 0;
+    g_launch_after = 0;
+    g_session_job = 0;
+    g_phase = INSTALL_IDLE;
+}
+
+static void
+restore_steam_overlay(const char *dir)
+{
+    char mid[MAX_PATH];
+    char backup_dir[MAX_PATH];
+    char backup[MAX_PATH];
+    char dest[MAX_PATH];
+    char root_dll[MAX_PATH];
+    char cache[MAX_PATH];
+
+    if (os_join(root_dll, sizeof(root_dll), dir, "steam_api64.dll") && file_exists(root_dll)) {
+        os_delete_file(root_dll);
+    }
+    backup[0] = '\0';
+    if (os_join(mid, sizeof(mid), dir, ".dawn") &&
+        os_join(backup_dir, sizeof(backup_dir), mid, "backup") &&
+        os_join(backup, sizeof(backup), backup_dir, "steam_api64.dll") &&
+        file_exists(backup)) {
+        /* keep */
+    } else {
+        backup[0] = '\0';
+        depot_cache_dir(cache, sizeof(cache));
+        if (cache[0] && steam_dll_path(cache, backup, sizeof(backup)) &&
+            file_exists(backup) && os_file_size(backup) < (1ull << 20)) {
+            /* stock DLL from depot cache */
+        } else {
+            backup[0] = '\0';
+        }
+    }
+    if (backup[0] && steam_dll_path(dir, dest, sizeof(dest))) {
+        char parent[MAX_PATH];
+
+        if (path_parent(parent, sizeof(parent), dest)) {
+            os_mkdirs(parent);
+        }
+        os_copy_file(backup, dest);
+    }
+}
+
+static int
+uninstall_dawn_only(const char *dir)
+{
+    char bin[MAX_PATH];
+    char x64[MAX_PATH];
+
+    if (!dll_named(dir, "Sunrise")) {
+        restore_steam_overlay(dir);
+    }
+    wipe_child(dir, "Dawn");
+    if (os_join(bin, sizeof(bin), dir, "bin") && os_join(x64, sizeof(x64), bin, "x64")) {
+        wipe_child(x64, "Dawn");
+    }
+    wipe_child(dir, "launch-destiny.cmd");
+    wipe_child(dir, "launch-destiny.sh");
+    wipe_child(dir, "release.json");
+    wipe_child(dir, ".dawn");
+    return 1;
+}
+
+static int
+uninstall_sunrise_only(const char *dir)
+{
+    char bin[MAX_PATH];
+    char x64[MAX_PATH];
+
+    if (dll_named(dir, "Sunrise")) {
+        restore_steam_overlay(dir);
+    }
+    wipe_child(dir, "Sunrise");
+    if (os_join(bin, sizeof(bin), dir, "bin") && os_join(x64, sizeof(x64), bin, "x64")) {
+        wipe_child(x64, "Sunrise");
+    }
+    wipe_child(dir, ".sunrise");
+    return 1;
+}
+
+static int
+uninstall_allowed(void)
 {
     size_t n;
 
     if (g_busy) {
-        set_status("Cannot uninstall while busy");
+        set_status("Busy, can't uninstall");
+        return 0;
+    }
+    if (destiny2_running()) {
+        set_status("Close Destiny 2 first");
         return 0;
     }
     if (!g_dir[0] || !os_dir_exists(g_dir)) {
@@ -3079,7 +5284,7 @@ install_job_uninstall(void)
     }
     n = strlen(g_dir);
     if (n < 6) {
-        set_status("Install folder looks unsafe");
+        set_status("Folder looks unsafe");
         return 0;
     }
     {
@@ -3090,28 +5295,121 @@ install_job_uninstall(void)
             os_stricmp(base, "Users") == 0 ||
             os_stricmp(base, "home") == 0 ||
             os_stricmp(base, "AppData") == 0) {
-            set_status("Install folder looks unsafe");
+            set_status("Folder looks unsafe");
             return 0;
         }
     }
     if (looks_like_steam_common(g_dir) && !marker_matches(g_dir) && !dawn_depots_present(g_dir)) {
-        set_status("Refusing to delete a live Steam install");
+        set_status("Won't delete Steam install");
+        return 0;
+    }
+    return 1;
+}
+
+static int
+queue_remove(int kind, const char *status)
+{
+    if (!uninstall_allowed()) {
+        return 0;
+    }
+    stop_auto_dawn();
+    g_remove_next = kind;
+    g_busy = 1;
+    set_status(status);
+    return 1;
+}
+
+static void
+apply_remove(void)
+{
+    char root[MAX_PATH];
+    const char *dir;
+    int kind = g_remove_next;
+
+    g_remove_next = REMOVE_NONE;
+    stop_auto_dawn();
+    dir = parts_dir(root, sizeof(root));
+    if (kind == REMOVE_DAWN) {
+        uninstall_dawn_only(dir);
+        if (dawn_present(dir)) {
+            uninstall_dawn_only(dir);
+        }
+        invalidate_install_ready();
+        persist_dir();
+        g_busy = 0;
+        g_phase = INSTALL_IDLE;
+        set_status(dawn_present(dir) ? "Could not remove Dawn" : "Ready to install Dawn");
+        return;
+    }
+    if (kind == REMOVE_SUNRISE) {
+        uninstall_sunrise_only(dir);
+        if (sunrise_present(dir)) {
+            uninstall_sunrise_only(dir);
+        }
+        invalidate_install_ready();
+        persist_dir();
+        g_busy = 0;
+        g_phase = INSTALL_IDLE;
+        if (sunrise_present(dir)) {
+            set_status("Could not remove Sunrise");
+        } else if (dawn_ready(dir)) {
+            set_status("Dawn is ready");
+        } else {
+            set_status("Ready to install Dawn");
+        }
+        return;
+    }
+    preserve_depot_cache();
+    wipe_tree(g_dir);
+    os_mkdirs(g_dir);
+    invalidate_install_ready();
+    persist_dir();
+    g_busy = 0;
+    g_phase = INSTALL_IDLE;
+    set_status("Folder removed");
+}
+
+int
+install_job_uninstall(void)
+{
+    if (!uninstall_allowed()) {
         return 0;
     }
     if (!game_root_in(g_dir, NULL, 0) &&
-        !dawn_ready(g_dir) &&
+        !dawn_present(g_dir) &&
+        !sunrise_present(g_dir) &&
         !steam_dll_present(g_dir)) {
-        set_status("No game files in this folder");
+        set_status("No game files here");
         return 0;
     }
-    wipe_tree(g_dir);
-    os_mkdirs(g_dir);
-    g_installed = 0;
-    g_installed_check = 0;
-    g_scan_check = 0;
-    persist_dir();
-    set_status("Install folder was removed");
-    return 1;
+    return queue_remove(REMOVE_FULL, "Removing game files");
+}
+
+int
+install_job_uninstall_part(int part)
+{
+    char root[MAX_PATH];
+    const char *dir;
+
+    if (part != INSTALL_PART_DAWN && part != INSTALL_PART_SUNRISE) {
+        return install_job_uninstall();
+    }
+    if (!uninstall_allowed()) {
+        return 0;
+    }
+    dir = parts_dir(root, sizeof(root));
+    if (part == INSTALL_PART_DAWN) {
+        if (!dawn_present(dir)) {
+            set_status("Nothing to uninstall");
+            return 0;
+        }
+        return queue_remove(REMOVE_DAWN, "Removing Dawn Mod");
+    }
+    if (!sunrise_present(dir)) {
+        set_status("Nothing to uninstall");
+        return 0;
+    }
+    return queue_remove(REMOVE_SUNRISE, "Removing Sunrise Mod");
 }
 
 int
@@ -3121,27 +5419,28 @@ install_job_verify(void)
         return 0;
     }
     if (g_dir[0] == '\0') {
-        set_status("Install folder is missing");
+        set_status("No install folder");
         return 0;
     }
     if (is_live_latest_d2(g_dir)) {
-        set_status("This folder is a live Destiny 2 install, not the 86657 files Dawn needs");
+        set_status("Live D2 folder, not 86657");
         return 0;
     }
     if (!find_tool()) {
-        set_status("DepotDownloader is missing in tools/");
+        set_status("DepotDownloader missing");
         return 0;
     }
     bind_steam_identity();
     if (!steam_auth_signed_in()) {
-        set_status("Sign in with Steam first");
+        set_status("Sign in first");
         return 0;
     }
     if (g_user[0] == '\0') {
-        set_status("Steam account name is missing");
+        set_status("No Steam username");
         return 0;
     }
     g_verify = 1;
     g_phase = INSTALL_RUNNING;
+    g_filelist[0] = '\0';
     return start_depot();
 }

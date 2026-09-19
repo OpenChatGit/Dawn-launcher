@@ -11,6 +11,7 @@ int steam_auth_begin(void);
 void steam_auth_cancel(void);
 void steam_auth_sign_out(void);
 int steam_auth_signed_in(void);
+int steam_auth_consume_fresh_login(void);
 int steam_auth_busy(void);
 const char *steam_auth_persona(void);
 const char *steam_auth_id(void);
@@ -20,7 +21,7 @@ const char *steam_auth_dd_user(void);
 void steam_auth_set_dd_user(const char *username);
 int steam_auth_owns_d2(void);
 int steam_auth_owns_forsaken(void);
-int steam_auth_owns_red_war(void);
+int steam_auth_owns_shadowkeep(void);
 
 #ifdef __cplusplus
 }

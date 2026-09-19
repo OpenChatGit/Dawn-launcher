@@ -89,7 +89,7 @@ approach_rate(float current, float target, float dt, float rate)
 static float
 approach(float current, float target, float dt)
 {
-    return approach_rate(current, target, dt, 16.0f);
+    return approach_rate(current, target, dt, 22.0f);
 }
 
 static void
@@ -364,7 +364,7 @@ account_menu(
         float dlc_y = (float)L->dlc_y;
         float line_h = (float)L->dlc_h * 0.5f;
         int forsaken = platform->steam_owns_forsaken ? platform->steam_owns_forsaken() : -1;
-        int red_war = platform->steam_owns_red_war ? platform->steam_owns_red_war() : -1;
+        int shadowkeep = platform->steam_owns_shadowkeep ? platform->steam_owns_shadowkeep() : -1;
         icon_draw_label_alpha(
             platform->hdc,
             ident_x,
@@ -384,8 +384,8 @@ account_menu(
             dlc_y + line_h,
             (float)L->item_w,
             line_h,
-            red_war > 0 ? L"Red War  ·  Base game  ·  Owned" :
-                red_war == 0 ? L"Red War  ·  Base game  ·  Missing" : L"Red War  ·  Base game  ·  Hidden",
+            shadowkeep > 0 ? L"Shadowkeep Pack  ·  Owned" :
+                shadowkeep == 0 ? L"Shadowkeep Pack  ·  Not owned" : L"Shadowkeep Pack  ·  Hidden",
             chrome->muted,
             (float)px(11, s),
             400,
@@ -456,7 +456,7 @@ titlebar_tick(Platform *platform, float dt)
     g_hover_avatar = approach(g_hover_avatar, (over_avatar || g_open) ? 1.0f : 0.0f, dt);
     g_hover_signin = approach(g_hover_signin, over_item ? 1.0f : 0.0f, dt);
     g_hover_settings = approach(g_hover_settings, over_settings ? 1.0f : 0.0f, dt);
-    g_menu = modal_approach(g_menu, g_open ? 1.0f : 0.0f, dt);
+    g_menu = g_open ? 1.0f : 0.0f;
 
     control_button(
         platform,

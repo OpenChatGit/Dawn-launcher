@@ -9,6 +9,7 @@ out/
 .idea/
 .vscode/
 tools/DepotDownloader/
+tools/dawn-release/
 *.user
 *.obj
 *.o

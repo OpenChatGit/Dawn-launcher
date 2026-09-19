@@ -269,6 +269,35 @@ os_trim_leaf(char *path)
 }
 
 int
+os_exe_dir(char *out, size_t max)
+{
+    char exe[MAX_PATH];
+
+    if (!out || max < 2) {
+        return 0;
+    }
+#ifdef _WIN32
+    {
+        DWORD n = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe));
+        if (n == 0 || n >= (DWORD)sizeof(exe)) {
+            return 0;
+        }
+    }
+#else
+    {
+        ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+        if (n <= 0) {
+            return 0;
+        }
+        exe[n] = '\0';
+    }
+#endif
+    os_trim_leaf(exe);
+    snprintf(out, max, "%s", exe);
+    return out[0] != '\0';
+}
+
+int
 os_app_root(char *out, size_t max, const char *fallback)
 {
     char exe[MAX_PATH];
@@ -278,25 +307,10 @@ os_app_root(char *out, size_t max, const char *fallback)
     if (!out || max < 2) {
         return 0;
     }
-#ifdef _WIN32
-    {
-        DWORD n = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe));
-        if (n == 0 || n >= (DWORD)sizeof(exe)) {
-            snprintf(out, max, "%s", fallback && fallback[0] ? fallback : ".");
-            return 1;
-        }
+    if (!os_exe_dir(exe, sizeof(exe))) {
+        snprintf(out, max, "%s", fallback && fallback[0] ? fallback : ".");
+        return 1;
     }
-#else
-    {
-        ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-        if (n <= 0) {
-            snprintf(out, max, "%s", fallback && fallback[0] ? fallback : ".");
-            return 1;
-        }
-        exe[n] = '\0';
-    }
-#endif
-    os_trim_leaf(exe);
     if (os_join(themes, sizeof(themes), exe, "themes") && os_dir_exists(themes)) {
         snprintf(out, max, "%s", exe);
         return 1;

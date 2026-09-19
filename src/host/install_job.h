@@ -1,10 +1,17 @@
 #ifndef HOST_INSTALL_JOB_H
 #define HOST_INSTALL_JOB_H
 
+#ifndef INSTALL_PART_DEPOTS
+#define INSTALL_PART_DEPOTS 1
+#define INSTALL_PART_DAWN 2
+#define INSTALL_PART_SUNRISE 4
+#endif
+
 typedef enum InstallNeed {
     INSTALL_NEED_NONE = 0,
     INSTALL_NEED_PASSWORD,
-    INSTALL_NEED_GUARD
+    INSTALL_NEED_GUARD,
+    INSTALL_NEED_ACCOUNT
 } InstallNeed;
 
 void install_job_init(const char *project_root);
@@ -25,6 +32,13 @@ const char *install_job_status(void);
 int install_job_ready(void);
 int install_job_launch(void);
 int install_job_uninstall(void);
+int install_job_parts(void);
+int install_job_uninstall_part(int part);
 int install_job_verify(void);
+int install_job_game_state(void);
+void install_job_game_stop(void);
+void install_job_set_language(const char *steam);
+const char *install_job_language(void);
+const char *install_job_language_label(void);
 
 #endif

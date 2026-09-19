@@ -56,7 +56,7 @@ WinMain(HINSTANCE instance, HINSTANCE prev, LPSTR cmd, int show)
 
     HostWindow window;
     if (!window_create(&window, "DAWN", 1200, 620)) {
-        MessageBoxA(NULL, "Window create failed", "host", MB_ICONERROR);
+        MessageBoxA(NULL, "Window create failed", "Dawn", MB_ICONERROR);
         return 1;
     }
     resolve_app_root();
@@ -95,6 +95,12 @@ main(void)
     static AppMemory memory;
     if (!hot_reload_init(&memory)) {
         host_log(hot_reload_error());
+#ifdef _WIN32
+        MessageBoxA(NULL, hot_reload_error(), "Dawn", MB_ICONERROR);
+#else
+        fprintf(stderr, "%s\n", hot_reload_error());
+#endif
+        return 1;
     } else if (hot_reload_api() && hot_reload_api()->init) {
         hot_reload_api()->init(&memory);
     }
@@ -166,17 +172,48 @@ main(void)
 
         Platform platform;
         window_bind_platform(&window, &platform, g_app_root);
-
-        const AppApi *api = hot_reload_api();
-        if (api && api->tick) {
-            api->tick(&memory, &platform, dt);
-        } else {
-            platform.clear(APP_RGB(1, 6, 19));
+        if (install_job_need() >= 1 && install_job_need() <= 3) {
+            window_keep_key_focus(&window);
         }
 
-        window_present(&window);
+        int vsync = 0;
+        int focused = window_focused(&window);
+        if (!window_minimized(&window)) {
+            const AppApi *api = hot_reload_api();
+            if (api && api->tick) {
+                api->tick(&memory, &platform, dt);
+            } else {
+                platform.clear(APP_RGB(1, 6, 19));
+            }
+            window_apply_cursor(&window, platform.want_text_cursor);
+            vsync = window_present(&window);
+        }
         window_end_frame_input(&window);
-        os_sleep_ms(16);
+        if (window_minimized(&window)) {
+            os_sleep_ms(50);
+        } else if (!vsync || !focused) {
+            /* Full 60 Hz only while we are the active window. In the
+             * background (or behind the running game) the animated theme
+             * does not need to burn a CPU core: 30 fps, 10 fps while D2 runs. */
+            double target = 1.0 / 60.0;
+            if (!focused) {
+                target = install_job_game_state() == 2 ? 1.0 / 10.0 : 1.0 / 30.0;
+            }
+#ifdef _WIN32
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            double used = (double)(now.QuadPart - last.QuadPart) / (double)freq.QuadPart;
+#else
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            double used = (double)(now.tv_sec - last.tv_sec) +
+                (double)(now.tv_nsec - last.tv_nsec) / 1000000000.0;
+#endif
+            double remain = target - used;
+            if (remain > 0.001) {
+                os_sleep_ms((unsigned)(remain * 1000.0));
+            }
+        }
     }
 
     if (hot_reload_api() && hot_reload_api()->shutdown) {

@@ -18,6 +18,27 @@ using namespace Gdiplus;
 static ULONG_PTR g_token;
 static int g_started;
 static int g_icon_alpha = 255;
+static FontFamily *g_family;
+static Font *g_font;
+static float g_font_px;
+static int g_font_weight;
+
+static Font *
+cached_font(float px, int weight)
+{
+    INT style = weight >= 600 ? FontStyleBold : FontStyleRegular;
+    if (!g_family) {
+        g_family = new FontFamily(L"Segoe UI");
+    }
+    if (g_font && g_font_px == px && g_font_weight == weight) {
+        return g_font;
+    }
+    delete g_font;
+    g_font = new Font(g_family, px, style, UnitPixel);
+    g_font_px = px;
+    g_font_weight = weight;
+    return g_font;
+}
 
 void
 icon_set_alpha(int alpha)
@@ -907,7 +928,8 @@ draw_label(
     float px,
     int weight,
     StringAlignment align,
-    int alpha
+    int alpha,
+    int ellipsize
 )
 {
     if (!hdc || !text || w < 1.0f || h < 1.0f || px < 1.0f || alpha <= 0) {
@@ -920,16 +942,17 @@ draw_label(
     g.SetTextRenderingHint(alpha >= 250 ? TextRenderingHintClearTypeGridFit : TextRenderingHintAntiAlias);
     g.SetTextContrast(1200);
 
-    FontFamily family(L"Segoe UI");
-    INT style = weight >= 600 ? FontStyleBold : FontStyleRegular;
-    Font font(&family, px, style, UnitPixel);
+    Font *font = cached_font(px, weight);
+    if (!font) {
+        return;
+    }
     SolidBrush brush(argb(rgb, alpha));
     StringFormat fmt(StringFormat::GenericTypographic());
     fmt.SetAlignment(align);
     fmt.SetLineAlignment(StringAlignmentCenter);
-    fmt.SetFormatFlags(StringFormatFlagsNoWrap | StringFormatFlagsNoClip);
-    fmt.SetTrimming(StringTrimmingEllipsisCharacter);
-    g.DrawString(text, -1, &font, RectF(x, y, w, h), &fmt, &brush);
+    fmt.SetFormatFlags(StringFormatFlagsNoWrap | StringFormatFlagsNoClip | StringFormatFlagsMeasureTrailingSpaces);
+    fmt.SetTrimming(ellipsize ? StringTrimmingEllipsisCharacter : StringTrimmingNone);
+    g.DrawString(text, -1, font, RectF(x, y, w, h), &fmt, &brush);
 }
 
 void
@@ -945,7 +968,7 @@ icon_draw_label(
     int weight
 )
 {
-    draw_label(hdc, x, y, w, h, text, rgb, px, weight, StringAlignmentNear, 255);
+    draw_label(hdc, x, y, w, h, text, rgb, px, weight, StringAlignmentNear, 255, 1);
 }
 
 void
@@ -962,7 +985,80 @@ icon_draw_label_alpha(
     int alpha
 )
 {
-    draw_label(hdc, x, y, w, h, text, rgb, px, weight, StringAlignmentNear, alpha);
+    draw_label(hdc, x, y, w, h, text, rgb, px, weight, StringAlignmentNear, alpha, 1);
+}
+
+void
+icon_draw_label_end_alpha(
+    void *hdc,
+    float x,
+    float y,
+    float w,
+    float h,
+    const wchar_t *text,
+    uint32_t rgb,
+    float px,
+    int weight,
+    int alpha
+)
+{
+    draw_label(hdc, x, y, w, h, text, rgb, px, weight, StringAlignmentFar, alpha, 0);
+}
+
+float
+icon_measure_label(void *hdc, const wchar_t *text, float px, int weight)
+{
+    if (!text || !text[0] || px < 1.0f) {
+        return 0.0f;
+    }
+    ensure_gdiplus();
+
+    HDC raw = hdc ? (HDC)hdc : GetDC(NULL);
+    if (!raw) {
+        return 0.0f;
+    }
+
+    Graphics g(raw);
+    g.SetPageUnit(UnitPixel);
+    g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+    g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+
+    Font *font = cached_font(px, weight);
+    if (!font) {
+        if (!hdc) {
+            ReleaseDC(NULL, raw);
+        }
+        return 0.0f;
+    }
+    StringFormat fmt(StringFormat::GenericTypographic());
+    fmt.SetAlignment(StringAlignmentNear);
+    fmt.SetLineAlignment(StringAlignmentNear);
+    fmt.SetFormatFlags(StringFormatFlagsMeasureTrailingSpaces | StringFormatFlagsNoWrap | StringFormatFlagsNoClip);
+    fmt.SetTrimming(StringTrimmingNone);
+
+    int len = (int)wcslen(text);
+    CharacterRange range(0, len);
+    fmt.SetMeasurableCharacterRanges(1, &range);
+
+    RectF layout(0.0f, 0.0f, 8192.0f, px * 6.0f);
+    Region region;
+    RectF bounds;
+    float width = 0.0f;
+    if (g.MeasureCharacterRanges(text, len, font, layout, &fmt, 1, &region) == Ok) {
+        region.GetBounds(&bounds, &g);
+        width = bounds.GetRight();
+    } else {
+        g.MeasureString(text, len, font, layout, &fmt, &bounds);
+        width = bounds.Width;
+    }
+
+    if (!hdc) {
+        ReleaseDC(NULL, raw);
+    }
+    if (width < 0.0f) {
+        return 0.0f;
+    }
+    return width;
 }
 
 void
@@ -981,7 +1077,6 @@ icon_draw_label_shimmer(
     float phase
 )
 {
-    draw_label(hdc, x, y, w, h, text, rgb, px, weight, StringAlignmentNear, alpha);
     if (!hdc || !text || w < 8.0f || h < 4.0f || alpha <= 0 || px < 1.0f) {
         return;
     }
@@ -991,34 +1086,47 @@ icon_draw_label_shimmer(
     if (phase > 1.0f) {
         phase -= floorf(phase);
     }
+
+    x = floorf(x);
+    y = floorf(y);
+    w = floorf(w);
+    h = floorf(h);
+    px = floorf(px + 0.5f);
+
     ensure_gdiplus();
     Graphics g((HDC)hdc);
-    g.SetSmoothingMode(SmoothingModeAntiAlias);
-    g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
-    g.SetTextRenderingHint(TextRenderingHintAntiAlias);
-    g.SetTextContrast(1200);
+    g.SetSmoothingMode(SmoothingModeNone);
+    g.SetPixelOffsetMode(PixelOffsetModeNone);
+    g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+    g.SetTextContrast(2200);
 
-    float band = w * 0.30f;
-    if (band < 36.0f) {
-        band = 36.0f;
+    Font *font = cached_font(px, weight);
+    if (!font) {
+        return;
     }
-    if (band > w * 0.55f) {
-        band = w * 0.55f;
-    }
-    float travel = w + band * 2.0f;
-    float cx = x - band + travel * phase;
-    g.SetClip(RectF(cx, y, band, h));
-
-    FontFamily family(L"Segoe UI");
-    INT style = weight >= 600 ? FontStyleBold : FontStyleRegular;
-    Font font(&family, px, style, UnitPixel);
-    SolidBrush brush(argb(shine, alpha));
     StringFormat fmt(StringFormat::GenericTypographic());
-    fmt.SetAlignment(StringAlignmentNear);
+    fmt.SetAlignment(StringAlignmentFar);
     fmt.SetLineAlignment(StringAlignmentCenter);
-    fmt.SetFormatFlags(StringFormatFlagsNoWrap);
-    fmt.SetTrimming(StringTrimmingEllipsisCharacter);
-    g.DrawString(text, -1, &font, RectF(x, y, w, h), &fmt, &brush);
+    fmt.SetFormatFlags(StringFormatFlagsNoWrap | StringFormatFlagsNoClip | StringFormatFlagsMeasureTrailingSpaces);
+    fmt.SetTrimming(StringTrimmingNone);
+
+    RectF box(x, y, w, h);
+    SolidBrush base(argb(rgb, alpha >= 255 ? 255 : alpha));
+    g.DrawString(text, -1, font, box, &fmt, &base);
+
+    float band = 56.0f;
+    if (band > w * 0.34f) {
+        band = w * 0.34f;
+    }
+    if (band < 28.0f) {
+        band = 28.0f;
+    }
+    float travel = w + band;
+    float cx = floorf(x - band + travel * phase);
+    g.SetClip(RectF(cx, y, band, h), CombineModeReplace);
+    SolidBrush hi(argb(shine, 255));
+    g.DrawString(text, -1, font, box, &fmt, &hi);
+    g.ResetClip();
 }
 
 void
@@ -1034,7 +1142,7 @@ icon_draw_label_center(
     int weight
 )
 {
-    draw_label(hdc, x, y, w, h, text, rgb, px, weight, StringAlignmentCenter, 255);
+    draw_label(hdc, x, y, w, h, text, rgb, px, weight, StringAlignmentCenter, 255, 1);
 }
 
 void
@@ -1051,7 +1159,7 @@ icon_draw_label_center_alpha(
     int alpha
 )
 {
-    draw_label(hdc, x, y, w, h, text, rgb, px, weight, StringAlignmentCenter, alpha);
+    draw_label(hdc, x, y, w, h, text, rgb, px, weight, StringAlignmentCenter, alpha, 1);
 }
 
 static Bitmap *g_avatar_src;

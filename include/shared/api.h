@@ -3,7 +3,12 @@
 
 #include "shared/types.h"
 
-#define APP_API_VERSION 19
+#define APP_API_VERSION 25
+#ifndef INSTALL_PART_DEPOTS
+#define INSTALL_PART_DEPOTS 1
+#define INSTALL_PART_DAWN 2
+#define INSTALL_PART_SUNRISE 4
+#endif
 #define APP_STATE_BYTES APP_MEGABYTES(4)
 
 #define PLATFORM_KEY_NONE 0
@@ -30,9 +35,11 @@ typedef struct Platform {
     int mouse_down;
     int mouse_pressed;
     int mouse_released;
-    char text[32];
+    int mouse_wheel;
+    char text[128];
     int text_len;
     int key;
+    int want_text_cursor;
     const char *project_root;
     void *hdc;
     float dpi_scale;
@@ -83,7 +90,14 @@ typedef struct Platform {
     int (*install_ready)(void);
     int (*install_launch)(void);
     int (*install_uninstall)(void);
+    int (*install_parts)(void);
+    int (*install_uninstall_part)(int part);
     int (*install_verify)(void);
+    int (*game_state)(void);
+    void (*game_stop)(void);
+    void (*install_set_language)(const char *steam);
+    const char *(*install_language)(void);
+    const char *(*install_language_label)(void);
     int (*steam_sign_in)(void);
     void (*steam_sign_out)(void);
     void (*steam_cancel)(void);
@@ -95,7 +109,7 @@ typedef struct Platform {
     const char *(*steam_status)(void);
     int (*steam_owns_d2)(void);
     int (*steam_owns_forsaken)(void);
-    int (*steam_owns_red_war)(void);
+    int (*steam_owns_shadowkeep)(void);
 } Platform;
 
 typedef struct AppMemory {

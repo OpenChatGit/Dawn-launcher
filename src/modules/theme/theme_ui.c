@@ -16,7 +16,7 @@ approach(float current, float target, float dt)
     if (dt > 0.05f) {
         dt = 0.05f;
     }
-    float next = current + (target - current) * (1.0f - expf(-16.0f * dt));
+    float next = current + (target - current) * (1.0f - expf(-22.0f * dt));
     if (next < 0.001f) {
         return 0.0f;
     }

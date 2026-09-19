@@ -254,22 +254,76 @@ modal_draw_field(
     float scale
 )
 {
+    modal_draw_input(hdc, x, y, w, h, text, L"", 0, 0, anim, scale);
+}
+
+void
+modal_draw_input(
+    void *hdc,
+    float x,
+    float y,
+    float w,
+    float h,
+    const wchar_t *text,
+    const wchar_t *placeholder,
+    int focused,
+    int caret_on,
+    float anim,
+    float scale
+)
+{
     const ThemeChrome *chrome = theme_chrome();
-    float radius = h * 0.28f;
-    icon_round_rect(hdc, x, y, w, h, radius, modal_field_color(), (int)(anim * 255.0f));
-    icon_round_stroke(hdc, x, y, w, h, radius, chrome->muted, (int)(anim * 32.0f), 1.0f);
+    float radius = h * 0.30f;
+    float pad = (float)modal_px(14, scale);
+    float px = (float)modal_px(13, scale);
+    int alpha = (int)(anim * 255.0f);
+    uint32_t fill = focused ? modal_mix(modal_field_color(), 0xffffff, 10) : modal_field_color();
+    uint32_t stroke = focused ? chrome->hover : chrome->muted;
+    int stroke_a = (int)(anim * (focused ? 88.0f : 34.0f));
+    const wchar_t *show = (text && text[0]) ? text : (placeholder ? placeholder : L"");
+    uint32_t fg = (text && text[0]) ? chrome->title_color : chrome->muted;
+    float caret_x;
+    float caret_h;
+    float caret_y;
+    float text_w = w - pad * 2.0f;
+
+    icon_round_rect(hdc, x, y, w, h, radius, fill, alpha);
+    icon_round_stroke(hdc, x, y, w, h, radius, stroke, stroke_a, focused ? 1.35f : 1.0f);
     icon_draw_label_alpha(
         hdc,
-        x + (float)modal_px(12, scale),
+        x + pad,
         y,
-        w - (float)modal_px(24, scale),
+        text_w,
         h,
-        text ? text : L"",
-        chrome->title_color,
-        (float)modal_px(11, scale),
+        show,
+        fg,
+        px,
         400,
         modal_alpha(anim)
     );
+    if (focused && caret_on) {
+        caret_x = pad;
+        if (text && text[0]) {
+            caret_x += icon_measure_label(hdc, text, px, 400);
+        }
+        if (caret_x < pad) {
+            caret_x = pad;
+        }
+        if (caret_x > w - pad) {
+            caret_x = w - pad;
+        }
+        caret_h = h * 0.46f;
+        caret_y = y + (h - caret_h) * 0.5f;
+        icon_fill_rect(
+            hdc,
+            x + caret_x,
+            caret_y,
+            (float)modal_px(1.25f, scale),
+            caret_h,
+            chrome->title_color,
+            alpha
+        );
+    }
 }
 
 void

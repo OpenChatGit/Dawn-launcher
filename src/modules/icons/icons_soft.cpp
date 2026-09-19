@@ -365,6 +365,25 @@ draw_char(SoftDc *dc, int x, int y, int scale, wchar_t ch, uint32_t rgb, int alp
     }
 }
 
+float
+icon_measure_label(void *hdc, const wchar_t *text, float px, int weight)
+{
+    (void)hdc;
+    (void)weight;
+    if (!text || !text[0] || px < 1.0f) {
+        return 0.0f;
+    }
+    int scale = (int)(px / 8.0f);
+    if (scale < 1) {
+        scale = 1;
+    }
+    int n = 0;
+    while (text[n]) {
+        n++;
+    }
+    return (float)(n * 6 * scale);
+}
+
 void
 icon_draw_label_alpha(
     void *hdc,
@@ -396,6 +415,38 @@ icon_draw_label_alpha(
     for (int i = 0; text[i] && i < max_chars; ++i) {
         draw_char(dc, cx + i * glyph_w, cy, scale, text[i], rgb, alpha);
     }
+}
+
+void
+icon_draw_label_end_alpha(
+    void *hdc,
+    float x,
+    float y,
+    float w,
+    float h,
+    const wchar_t *text,
+    uint32_t rgb,
+    float px,
+    int weight,
+    int alpha
+)
+{
+    (void)weight;
+    SoftDc *dc = as_dc(hdc);
+    if (!dc || !text || w < 4.0f || h < 4.0f || alpha <= 0) {
+        return;
+    }
+    int scale = (int)(px / 8.0f);
+    if (scale < 1) {
+        scale = 1;
+    }
+    int glyph_w = 6 * scale;
+    int n = 0;
+    while (text[n]) {
+        n++;
+    }
+    float tw = (float)(n * glyph_w);
+    icon_draw_label_alpha(hdc, x + w - tw, y, tw > w ? w : tw, h, text, rgb, px, weight, alpha);
 }
 
 void
@@ -477,13 +528,13 @@ icon_draw_label_shimmer(
     }
     int glyph_w = 6 * scale;
     int glyph_h = 7 * scale;
-    int max_chars = (int)(w / (float)glyph_w);
-    int cy = (int)(y + (h - (float)glyph_h) * 0.5f);
-    int cx = (int)x;
     int n = 0;
-    while (text[n] && n < max_chars) {
+    while (text[n]) {
         n++;
     }
+    float tw = (float)(n * glyph_w);
+    int cy = (int)(y + (h - (float)glyph_h) * 0.5f);
+    int cx = (int)(x + w - tw);
     for (int i = 0; i < n; ++i) {
         float t = n > 1 ? (float)i / (float)(n - 1) : 0.0f;
         float d = t - phase;

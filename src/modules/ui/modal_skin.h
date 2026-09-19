@@ -64,6 +64,19 @@ void modal_draw_field(
     float anim,
     float scale
 );
+void modal_draw_input(
+    void *hdc,
+    float x,
+    float y,
+    float w,
+    float h,
+    const wchar_t *text,
+    const wchar_t *placeholder,
+    int focused,
+    int caret_on,
+    float anim,
+    float scale
+);
 void modal_draw_button(
     void *hdc,
     float x,

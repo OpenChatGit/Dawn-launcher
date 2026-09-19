@@ -4,6 +4,7 @@
 #include "shared/api.h"
 
 void settings_modal_open(void);
+void settings_modal_open_for_download(void);
 void settings_modal_close(void);
 void settings_modal_hide(void);
 int settings_modal_visible(void);
