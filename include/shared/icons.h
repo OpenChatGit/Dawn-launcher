@@ -105,6 +105,18 @@ void icon_draw_label(
     int weight
 );
 
+void icon_draw_label_full(
+    void *hdc,
+    float x,
+    float y,
+    float w,
+    float h,
+    const wchar_t *text,
+    uint32_t rgb,
+    float px,
+    int weight
+);
+
 void icon_draw_label_alpha(
     void *hdc,
     float x,

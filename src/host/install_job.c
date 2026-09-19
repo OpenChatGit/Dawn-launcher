@@ -312,6 +312,8 @@ clear_secret(void)
     SecureZeroMemory(g_secret, sizeof(g_secret));
 }
 
+static void forget_depot_password(void);
+
 static void
 append_log(const char *data, DWORD len)
 {
@@ -464,7 +466,7 @@ fail_job(const char *text)
     g_setup_creds = 0;
     g_phase = INSTALL_FAILED;
     set_status(text);
-    clear_secret();
+    forget_depot_password();
 }
 
 static int
@@ -499,6 +501,8 @@ static void persist_lang(void);
 static void depot_work_dir(char *out, int max);
 static void normalize_install_dir(void);
 static void write_marker(const char *dir);
+static void forget_depot_password(void);
+static int collect_wipe_cb(const char *name, int is_dir, void *user);
 
 #define WALK_BUDGET 800
 #define WALK_CHILD_MAX 64
@@ -2552,7 +2556,6 @@ send_secret(void)
         return 0;
     }
 #endif
-    clear_secret();
     g_need = INSTALL_NEED_NONE;
     set_status("Signing in");
     return 1;
@@ -2930,7 +2933,7 @@ complete_install(void)
     }
     g_verify = 0;
     g_user_start = 0;
-    clear_secret();
+    forget_depot_password();
     return 1;
 }
 
@@ -2940,6 +2943,17 @@ bind_steam_identity(void)
     const char *user = steam_auth_dd_user();
 
     if (!steam_auth_signed_in()) {
+        if (g_secret[0] || g_session_ready) {
+            forget_depot_password();
+        }
+        if (!g_busy) {
+            g_setup_creds = 0;
+            if (g_need == INSTALL_NEED_PASSWORD ||
+                g_need == INSTALL_NEED_ACCOUNT ||
+                g_need == INSTALL_NEED_GUARD) {
+                g_need = INSTALL_NEED_NONE;
+            }
+        }
         g_session_ready = 0;
         g_session_tried = 0;
         return;
@@ -2949,6 +2963,9 @@ bind_steam_identity(void)
     }
 }
 
+#ifdef __GNUC__
+__attribute__((unused))
+#endif
 static int
 start_steam_session(void)
 {
@@ -2997,10 +3014,30 @@ start_steam_session(void)
     return 1;
 }
 
+static int
+needs_depot_download(void)
+{
+    if (!g_dir[0]) {
+        return 0;
+    }
+    if (install_complete(g_dir) || depots_ready(g_dir)) {
+        return 0;
+    }
+    if (content_depot_present(g_dir) && language_depot_present(g_dir)) {
+        return 0;
+    }
+    return 1;
+}
+
 static void
 begin_depot_login(void)
 {
     if (g_busy) {
+        return;
+    }
+    if (!needs_depot_download()) {
+        g_setup_creds = 0;
+        g_need = INSTALL_NEED_NONE;
         return;
     }
     bind_steam_identity();
@@ -3020,20 +3057,9 @@ begin_depot_login(void)
 static void
 maybe_prepare_session(void)
 {
-    if (g_busy || g_cancel || g_setup_creds || g_need != INSTALL_NEED_NONE) {
-        return;
-    }
-    if (g_session_ready || g_session_tried) {
-        return;
-    }
-    if (!steam_auth_signed_in()) {
-        return;
-    }
-    bind_steam_identity();
-    if (!g_user[0]) {
-        return;
-    }
-    start_steam_session();
+    /* Password stays in memory only until the depot job finishes. Do not
+     * pre-login just to persist DepotDownloader tokens. */
+    (void)0;
 }
 
 static int
@@ -4191,7 +4217,7 @@ finish_depot_from_files(void)
         g_user_start = 0;
         repair_vc_runtimes(g_dir);
         remove_steam_appid(g_dir);
-        clear_secret();
+        forget_depot_password();
         if (launch) {
             if (!launch_game_tracked()) {
                 set_status("Dawn failed to start");
@@ -4311,7 +4337,7 @@ finish_child(DWORD exit_code)
         g_need = INSTALL_NEED_NONE;
         g_phase = INSTALL_IDLE;
         set_status("Cancelled");
-        clear_secret();
+        forget_depot_password();
         return;
     }
     if (g_session_job || !g_user_start) {
@@ -4319,12 +4345,11 @@ finish_child(DWORD exit_code)
         g_busy = 0;
         g_setup_creds = 0;
         g_need = INSTALL_NEED_NONE;
-        clear_secret();
         if (exit_code == 0) {
             g_session_ready = 1;
             set_status("Ready to download");
         } else {
-            set_status("Login saved");
+            set_status("Steam login failed");
         }
         return;
     }
@@ -4394,7 +4419,7 @@ install_job_init(const char *project_root)
     memset(g_user, 0, sizeof(g_user));
     memset(g_tool, 0, sizeof(g_tool));
     g_filelist[0] = '\0';
-    clear_secret();
+    forget_depot_password();
     g_status[0] = '\0';
     g_status_ms = 0;
     g_log[0] = '\0';
@@ -4454,7 +4479,7 @@ void
 install_job_shutdown(void)
 {
     install_job_cancel();
-    clear_secret();
+    forget_depot_password();
 }
 
 static int
@@ -4571,11 +4596,7 @@ install_job_submit_secret(const char *text)
         g_setup_creds = 0;
         g_need = INSTALL_NEED_NONE;
         bind_steam_identity();
-        if (!g_user[0] || !start_steam_session()) {
-            g_setup_creds = 1;
-            g_need = g_user[0] ? INSTALL_NEED_PASSWORD : INSTALL_NEED_ACCOUNT;
-            set_status(g_user[0] ? "Steam login failed" : "Enter Steam username");
-        }
+        set_status("Ready to download");
         return;
     }
     if (g_busy && g_need != INSTALL_NEED_NONE) {
@@ -4695,7 +4716,7 @@ install_job_cancel(void)
     g_cancel = 0;
     invalidate_install_ready();
     set_status("Cancelled");
-    clear_secret();
+    forget_depot_password();
 }
 
 void
@@ -4737,7 +4758,12 @@ install_job_poll(void)
         last_idle = now;
         bind_steam_identity();
         if (steam_auth_consume_fresh_login()) {
-            begin_depot_login();
+            if (needs_depot_download()) {
+                begin_depot_login();
+            } else {
+                g_setup_creds = 0;
+                g_need = INSTALL_NEED_NONE;
+            }
         }
         maybe_prepare_session();
         if (g_phase == INSTALL_RUNNING &&
@@ -4969,6 +4995,68 @@ const char *
 install_job_language_label(void)
 {
     return game_language()->label;
+}
+
+static void
+wipe_dd_store_dir(const char *dir, int depth)
+{
+    WalkKids kids;
+    int i;
+
+    if (depth > 10 || !dir || !dir[0] || !os_dir_exists(dir)) {
+        return;
+    }
+    kids.count = 0;
+    snprintf(kids.parent, sizeof(kids.parent), "%s", dir);
+    os_list_dir(dir, collect_wipe_cb, &kids);
+    for (i = 0; i < kids.count; i++) {
+        if (kids.is_dir[i]) {
+            wipe_dd_store_dir(kids.path[i], depth + 1);
+        } else if (os_stricmp(kids.name[i], "account.config") == 0) {
+            os_delete_file(kids.path[i]);
+        }
+    }
+}
+
+static void
+wipe_dd_account_store(void)
+{
+    char root[MAX_PATH];
+    char file[MAX_PATH];
+
+#ifdef _WIN32
+    const char *local = getenv("LOCALAPPDATA");
+    const char *roam = getenv("APPDATA");
+    if (local && local[0] && os_join(root, sizeof(root), local, "IsolatedStorage")) {
+        wipe_dd_store_dir(root, 0);
+    }
+    if (roam && roam[0] && os_join(root, sizeof(root), roam, "IsolatedStorage")) {
+        wipe_dd_store_dir(root, 0);
+    }
+#else
+    const char *home = getenv("HOME");
+    if (home && home[0]) {
+        if (os_join(root, sizeof(root), home, ".local/share/IsolatedStorage")) {
+            wipe_dd_store_dir(root, 0);
+        }
+        if (os_join(root, sizeof(root), home, ".isolated-storage")) {
+            wipe_dd_store_dir(root, 0);
+        }
+    }
+#endif
+    depot_work_dir(root, MAX_PATH);
+    if (os_join(file, sizeof(file), root, "account.config")) {
+        os_delete_file(file);
+    }
+}
+
+static void
+forget_depot_password(void)
+{
+    clear_secret();
+    g_session_ready = 0;
+    g_session_tried = 0;
+    wipe_dd_account_store();
 }
 
 static int

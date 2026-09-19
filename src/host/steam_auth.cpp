@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <netdb.h>
 #include <unistd.h>
 #include <cwchar>
 typedef int SOCKET;
@@ -1689,20 +1690,290 @@ close_listen(void)
     }
 }
 
+#define STEAM_OPENID_HOST "Dawn"
+
+static int
+hosts_path(char *out, int max)
+{
+#ifdef _WIN32
+    char windir[MAX_PATH];
+    UINT n = GetSystemWindowsDirectoryA(windir, (UINT)sizeof(windir));
+    return n > 0 && n < sizeof(windir) && os_join(out, (size_t)max, windir, "System32\\drivers\\etc\\hosts");
+#else
+    return snprintf(out, (size_t)max, "/etc/hosts") < max;
+#endif
+}
+
+static int
+hosts_line_has_dawn(const char *line)
+{
+    char buf[512];
+    char *tok;
+    int loopback = 0;
+
+    if (!line) {
+        return 0;
+    }
+    while (*line == ' ' || *line == '\t') {
+        line++;
+    }
+    if (*line == '#' || *line == '\0' || *line == '\r' || *line == '\n') {
+        return 0;
+    }
+    snprintf(buf, sizeof(buf), "%s", line);
+    tok = strtok(buf, " \t\r\n");
+    if (!tok) {
+        return 0;
+    }
+    loopback = strcmp(tok, "127.0.0.1") == 0 || strcmp(tok, "::1") == 0;
+    if (!loopback) {
+        return 0;
+    }
+    while ((tok = strtok(NULL, " \t\r\n")) != NULL) {
+        if (tok[0] == '#') {
+            break;
+        }
+        if (os_stricmp(tok, STEAM_OPENID_HOST) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+hosts_has_dawn(void)
+{
+    char path[MAX_PATH];
+    char line[512];
+    FILE *file;
+
+    if (!hosts_path(path, (int)sizeof(path))) {
+        return 0;
+    }
+    file = fopen(path, "rb");
+    if (!file) {
+        return 0;
+    }
+    while (fgets(line, (int)sizeof(line), file)) {
+        if (hosts_line_has_dawn(line)) {
+            fclose(file);
+            return 1;
+        }
+    }
+    fclose(file);
+    return 0;
+}
+
+int
+steam_auth_install_openid_host(void)
+{
+    char path[MAX_PATH];
+    FILE *file;
+
+    if (hosts_has_dawn()) {
+        return 1;
+    }
+    if (!hosts_path(path, (int)sizeof(path))) {
+        return 0;
+    }
+#ifdef _WIN32
+    {
+        DWORD attr = GetFileAttributesA(path);
+        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY)) {
+            SetFileAttributesA(path, attr & ~FILE_ATTRIBUTE_READONLY);
+        }
+    }
+#endif
+    file = fopen(path, "ab");
+    if (!file) {
+        return 0;
+    }
+    fputs("\n127.0.0.1 " STEAM_OPENID_HOST "\n", file);
+    fclose(file);
+    return hosts_has_dawn();
+}
+
+static int
+openid_host_is_loopback(const char *host)
+{
+    struct addrinfo hints;
+    struct addrinfo *res = NULL;
+    struct addrinfo *p;
+    int ok = 0;
+
+    if (!host || !host[0]) {
+        return 0;
+    }
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, NULL, &hints, &res) != 0) {
+        return 0;
+    }
+    for (p = res; p; p = p->ai_next) {
+        if (p->ai_family == AF_INET) {
+            const struct sockaddr_in *in = (const struct sockaddr_in *)p->ai_addr;
+            if (in->sin_addr.s_addr == htonl(INADDR_LOOPBACK)) {
+                ok = 1;
+                break;
+            }
+        }
+    }
+    freeaddrinfo(res);
+    return ok;
+}
+
+#ifdef _WIN32
+static int
+openid_host_elevate(void)
+{
+    char exe[MAX_PATH];
+    SHELLEXECUTEINFOA sei;
+
+    if (GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe)) == 0) {
+        return 0;
+    }
+    memset(&sei, 0, sizeof(sei));
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = "runas";
+    sei.lpFile = exe;
+    sei.lpParameters = "--add-openid-host";
+    sei.nShow = SW_HIDE;
+    if (!ShellExecuteExA(&sei)) {
+        return 0;
+    }
+    if (sei.hProcess) {
+        WaitForSingleObject(sei.hProcess, 20000);
+        CloseHandle(sei.hProcess);
+    }
+    return hosts_has_dawn();
+}
+#endif
+
+static const char *
+ensure_openid_host(void)
+{
+    if (openid_host_is_loopback(STEAM_OPENID_HOST) || hosts_has_dawn()) {
+        return STEAM_OPENID_HOST;
+    }
+    if (steam_auth_install_openid_host() &&
+        (openid_host_is_loopback(STEAM_OPENID_HOST) || hosts_has_dawn())) {
+        return STEAM_OPENID_HOST;
+    }
+#ifdef _WIN32
+    if (openid_host_elevate() &&
+        (openid_host_is_loopback(STEAM_OPENID_HOST) || hosts_has_dawn())) {
+        return STEAM_OPENID_HOST;
+    }
+#endif
+    return "127.0.0.1";
+}
+
 static void
 send_html(SOCKET client, const char *body)
 {
-    char page[1024];
+    char header[192];
+    size_t len = body ? strlen(body) : 0;
     int n = snprintf(
-        page,
-        sizeof(page),
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: %u\r\n\r\n%s",
-        (unsigned)strlen(body),
-        body
+        header,
+        sizeof(header),
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+        "Connection: close\r\nContent-Length: %u\r\n\r\n",
+        (unsigned)len
     );
     if (n > 0) {
-        send(client, page, n, 0);
+        send(client, header, n, 0);
     }
+    if (body && len > 0) {
+        send(client, body, (int)len, 0);
+    }
+}
+
+static int
+load_dawn_emblem(char *out, int max)
+{
+    char themes[MAX_PATH];
+    char dawn[MAX_PATH];
+    char path[MAX_PATH];
+    FILE *file;
+    size_t n;
+
+    if (!out || max < 64) {
+        return 0;
+    }
+    if (!os_join(themes, sizeof(themes), g_root, "themes") ||
+        !os_join(dawn, sizeof(dawn), themes, "dawn") ||
+        !os_join(path, sizeof(path), dawn, "emblem.svg")) {
+        return 0;
+    }
+    file = fopen(path, "rb");
+    if (!file) {
+        return 0;
+    }
+    n = fread(out, 1, (size_t)max - 1, file);
+    fclose(file);
+    out[n] = '\0';
+    return n > 32 && strstr(out, "<svg") != NULL;
+}
+
+static void
+send_auth_page(SOCKET client, const char *title, const char *detail)
+{
+    char emblem[8192];
+    char body[12288];
+
+    if (!title) {
+        title = "Dawn";
+    }
+    if (!detail) {
+        detail = "You can close this tab.";
+    }
+    if (!load_dawn_emblem(emblem, (int)sizeof(emblem))) {
+        snprintf(
+            emblem,
+            sizeof(emblem),
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1028 1028'>"
+            "<path fill='#0859f2' fill-rule='evenodd' d='M510.5 104.444L509.444 112.5L492.208 532.5L492.552 533.5L493.5 533.859L513.5 533.859L530.5 533.859L531.5 533.709L532.028 532.5L514.739 111.5L514.5 107.438L513.5 104.583L511.5 105.083Z M375.5 220.054L375.057 223.5L375.84 225.5L376.404 231.5L429.609 543.5L430.5 544.423L431.5 544.302L456.5 538.411L462.5 536.939L463.123 535.5L387.161 262.5L377.566 226.5L376.234 224.5Z M648.5 220.213L648.009 224.5L646.5 227.411L561.118 535.5L561.5 536.758L567.5 538.367L593.5 544.459L594.695 543.5L647.828 231.5L649.233 222.5Z M256.5 297.938L256.172 299.5L257.17 300.5L257.313 302.5L370.5 564.805L371.454 566.5L372.5 567.127L391.565 557.5L400.5 553.061L401.906 551.5L258.5 300.941L256.964 299.5Z M766.5 300.311L622.357 551.5L624.492 553.5L632.5 557.35L651.5 567.087L652.5 566.829L653.5 565.274L766.897 302.5L767.017 300.5Z M864.5 385.447L860.5 388.917L681.494 579.5L680.709 580.5L681.5 582.289L692.797 590.5L707.5 601.505L708.5 602.068L709.692 601.5L864.5 386.588Z M160.5 385.664L159.843 386.5L161.176 388.5L314.5 601.455L315.5 602.035L316.5 601.767L331.5 590.448L342.5 582.476L343.585 580.5L342.763 579.5Z M97.5 487.39L98.794 489.5L101.81 492.5L266.5 648.612L267.5 649.2L269.053 648.5L277.5 638.15L288.788 624.5L287.5 622.593L99.5 488.292Z M924.5 488.46L736.5 622.759L735.505 624.5L736.165 625.5L747.5 639.113L755.5 648.828L756.5 649.2L757.5 648.852L922.454 492.5L926.129 488.5L925.5 488.093Z M490.5 551.411L466.5 553.992L443.5 558.411L421.432 564.5L399.5 572.347L379.5 581.369L357.243 593.5L340.5 604.325L320.5 619.586L304.857 633.5L288.315 650.5L278.884 661.5L269.627 673.5L256.12 693.5L242.239 718.5L233.277 738.5L225.5 759.988L218.5 784.684L214.5 785.095L92.5 785.977L18.5 787.406L3.5 788.157L0.5 788.791L0.096 789.5L0.5 790.187L3.5 790.855L13.5 791.441L101.5 793.085L327.5 794.636L538.5 794.849L732.5 794.537L935.5 792.988L1013.5 791.459L1023.5 790.88L1026.5 790.282L1027.771 789.5L1025.5 788.407L1016.5 787.641L949.5 786.189L806.5 784.977L805.141 783.5L801.899 770.5L795.582 750.5L788.059 731.5L778.967 712.5L764.996 688.5L750.121 667.5L734.5 648.886L714.5 628.88L703.709 619.5L690.5 609.202L667.5 593.811L642.5 580.241L628.5 573.875L616.5 569.153L593.5 561.692L566.646 555.5L544.5 552.28L520.5 550.732L504.5 550.716Z M48.5 584.421L48.854 585.5L50.5 585.865L53.711 588.5L236.5 701.19L237.5 701.028L238.5 699.993L242.271 692.5L250.889 676.5L248.5 674.729L50.5 585.207L49.875 584.5Z M974.5 584.414L973.5 585.347L968.5 587.206L775.5 674.897L773.372 676.5L782.376 693.5L786.124 700.5L787.5 701.245L788.5 700.686L975.532 585.5L975.83 584.5Z M10.5 674.202L9.956 674.5L10.78 675.5L13.5 676.194L213.5 758.047L214.5 757.448L216.5 751.571L223.171 732.5L223.444 731.5L222.5 730.354L13.5 674.332Z M1010.5 674.423L801.5 730.495L800.827 731.5L801.064 732.5L808.5 754.307L809.846 757.5L810.5 758.024L811.5 757.786L966.5 694.27L1013.5 675.504L1014.319 674.5Z M392.5 833.45L298.5 834.848L245.5 836.372L215.5 838.057L207.5 839.292L206.165 840.5L206.541 841.5L207.5 841.924L220.5 843.627L245.5 844.853L304.5 846.534L450.5 848.176L632.5 847.854L721.5 846.534L783.5 844.726L811.5 842.995L818.5 841.86L819.649 840.5L818.863 839.5L817.5 839.124L805.5 837.652L779.5 836.344L721.5 834.731L574.5 833.045Z M418.5 885.428L372.5 886.473L336.5 887.974L328.5 889.366L327.832 890.5L331.5 891.919L342.5 892.775L366.5 893.837L418.5 895.022L529.5 895.583L599.5 895.013L654.5 893.842L678.5 892.785L689.5 891.961L693.369 890.5L692.5 889.303L684.5 887.962L651.5 886.56L602.5 885.419L492.5 884.893Z M455.5 931.495L430.042 932.5L419.5 934.02L418.54 934.5L418.326 935.5L420.5 936.741L429.5 937.944L458.5 939.563L515.5 940L566.5 939.344L593.5 937.919L602.5 936.716L604.308 935.5L604.123 934.5L602.5 933.817L592.5 932.48L555.5 931.079L508.5 930.698Z'/>"
+            "</svg>"
+        );
+    }
+    snprintf(
+        body,
+        sizeof(body),
+        "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<title>Dawn</title><style>"
+        "html,body{height:100%%;margin:0;background:#010613;color:#e6e6e6;"
+        "font-family:'Segoe UI',sans-serif}"
+        "body{min-height:100%%;display:flex;align-items:center;justify-content:center;"
+        "background:radial-gradient(ellipse at 50%% 40%%,#051a44 0%%,#03102d 48%%,#010613 78%%)}"
+        ".wrap{text-align:center;padding:48px 36px;max-width:420px}"
+        ".logo{width:96px;height:96px;margin:0 auto 22px;filter:drop-shadow(0 0 18px rgba(8,89,242,.55))}"
+        ".logo svg{width:100%%;height:100%%;display:block}"
+        ".brand{letter-spacing:.42em;font-size:12px;font-weight:600;color:#93c5fd}"
+        "h1{font-size:28px;font-weight:600;margin:16px 0 8px}"
+        "p{margin:0;color:#a8aeb6;font-size:14px;line-height:1.55}"
+        "</style></head><body><div class='wrap'><div class='logo'>%s</div>"
+        "<div class='brand'>DAWN</div><h1>%s</h1><p>%s</p></div>"
+        "<script>setTimeout(function(){window.close();},1400);</script>"
+        "</body></html>",
+        emblem,
+        title,
+        detail
+    );
+    send_html(client, body);
+}
+
+static void
+finish_client(SOCKET *client, const char *title, const char *detail)
+{
+    if (!client || *client == INVALID_SOCKET) {
+        return;
+    }
+    send_auth_page(*client, title, detail);
+    closesocket(*client);
+    *client = INVALID_SOCKET;
 }
 
 static int
@@ -1844,15 +2115,13 @@ auth_thread(void *)
         return 0;
     }
 
-    send_html(
-        client,
-        "<!doctype html><html><body style='background:#1b2838;color:#c7d5e0;font-family:Segoe UI,sans-serif;padding:32px'>"
-        "Returning to Dawn. You can close this tab.</body></html>"
-    );
-    closesocket(client);
-
     char query[8192];
     if (!extract_callback_query(request, got, query, (int)sizeof(query))) {
+        finish_client(
+            &client,
+            "Sign-in didn't finish",
+            "Steam sent no login data. You can close this tab."
+        );
         g_phase = STEAM_FAILED;
         set_status("Steam login missing");
         return 0;
@@ -1863,6 +2132,7 @@ auth_thread(void *)
     int count = parse_query(query, pairs, 64);
     const char *mode = query_get(pairs, count, "openid.mode");
     if (mode && strcmp(mode, "cancel") == 0) {
+        finish_client(&client, "Sign-in cancelled", "No Steam account was connected. You can close this tab.");
         g_phase = STEAM_FAILED;
         set_status("Sign-in cancelled");
         return 0;
@@ -1874,6 +2144,11 @@ auth_thread(void *)
     char steamid[STEAM_ID_MAX];
     steamid[0] = '\0';
     if (!claimed || !extract_steamid(claimed, steamid, (int)sizeof(steamid))) {
+        finish_client(
+            &client,
+            "Sign-in didn't finish",
+            "Steam did not return an account. You can close this tab."
+        );
         g_phase = STEAM_FAILED;
         set_status("Steam ID missing");
         debug_log("steam: claimed_id missing pairs=%d", count);
@@ -1882,10 +2157,16 @@ auth_thread(void *)
     g_phase = STEAM_WORKING;
     set_status("Confirming login");
     if (!verify_openid(query)) {
+        finish_client(
+            &client,
+            "Sign-in didn't finish",
+            "Steam could not confirm this login. You can close this tab."
+        );
         g_phase = STEAM_FAILED;
         set_status("Login invalid");
         return 0;
     }
+    finish_client(&client, "You're signed in", "You can close this tab and return to Dawn.");
 
     char name[STEAM_NAME_MAX];
     char avatar_url[512];
@@ -2025,10 +2306,11 @@ steam_auth_begin(void)
         return 0;
     }
 
+    const char *host = ensure_openid_host();
     char return_to[128];
     char realm[128];
-    snprintf(return_to, sizeof(return_to), "http://127.0.0.1:%u/steam/return", port);
-    snprintf(realm, sizeof(realm), "http://127.0.0.1:%u/", port);
+    snprintf(return_to, sizeof(return_to), "http://%s:%u/steam/return", host, port);
+    snprintf(realm, sizeof(realm), "http://%s:%u/", host, port);
     char enc_return[200];
     char enc_realm[200];
     url_encode(return_to, enc_return, (int)sizeof(enc_return));

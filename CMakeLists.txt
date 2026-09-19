@@ -47,6 +47,7 @@ set(HOST_SRC
     src/host/builder.c
     src/host/hot_reload.c
     src/host/install_job.c
+    src/host/self_update.c
     src/host/steam_auth.cpp
     src/shared/os.c
 )

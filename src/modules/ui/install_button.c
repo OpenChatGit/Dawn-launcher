@@ -275,7 +275,7 @@ secret_tick(Platform *platform, float dt)
         y + (float)modal_px(36, s),
         w - inset * 2.0f,
         (float)modal_px(18, s),
-        need == 2 ? L"Code from the Steam app" : (need == 3 ? L"DepotDownloader account name" : L"Steam login for DepotDownloader"),
+        need == 2 ? L"Code from the Steam app" : (need == 3 ? L"DepotDownloader account name" : L"Steam password for this download"),
         s,
         1.0f
     );
@@ -285,7 +285,7 @@ secret_tick(Platform *platform, float dt)
         y + (float)modal_px(54, s),
         w - inset * 2.0f,
         (float)modal_px(36, s),
-        need == 2 ? L"Type or paste the Guard code, then continue." : (need == 3 ? L"The username you use to sign in to Steam." : L"Needed once, then this login is remembered."),
+        need == 2 ? L"Type or paste the Guard code, then continue." : (need == 3 ? L"The username you use to sign in to Steam." : L"Deleted after the download."),
         s,
         1.0f
     );

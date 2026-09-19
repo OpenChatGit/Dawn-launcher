@@ -7,6 +7,7 @@ extern "C" {
 
 void steam_auth_init(const char *project_root);
 void steam_auth_shutdown(void);
+int steam_auth_install_openid_host(void);
 int steam_auth_begin(void);
 void steam_auth_cancel(void);
 void steam_auth_sign_out(void);

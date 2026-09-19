@@ -23,6 +23,7 @@ ui_tick(AppState *state, Platform *platform, uint32_t reload_count, float dt)
     login_modal_sync(state, platform);
 
     int chrome_hit = titlebar_wants_mouse(platform) ||
+        titlebar_modal_visible() ||
         login_modal_visible() ||
         settings_modal_visible() ||
         install_button_wants_mouse(platform);
@@ -46,6 +47,9 @@ ui_tick(AppState *state, Platform *platform, uint32_t reload_count, float dt)
     }
 
     titlebar_tick(platform, dt);
+    if (titlebar_modal_visible()) {
+        return;
+    }
     install_button_tick(platform, dt);
     login_modal_tick(platform, dt);
     settings_modal_tick(platform, dt);

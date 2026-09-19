@@ -972,6 +972,22 @@ icon_draw_label(
 }
 
 void
+icon_draw_label_full(
+    void *hdc,
+    float x,
+    float y,
+    float w,
+    float h,
+    const wchar_t *text,
+    uint32_t rgb,
+    float px,
+    int weight
+)
+{
+    draw_label(hdc, x, y, w, h, text, rgb, px, weight, StringAlignmentNear, 255, 0);
+}
+
+void
 icon_draw_label_alpha(
     void *hdc,
     float x,

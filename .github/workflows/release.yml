@@ -149,7 +149,7 @@ jobs:
           name: ${{ needs.version.outputs.title }}
           body_path: release-notes.md
           files: release-assets/*
-          generate_release_notes: ${{ needs.version.outputs.kind == 'official' }}
+          generate_release_notes: false
           draft: false
           prerelease: ${{ needs.version.outputs.kind != 'official' }}
           make_latest: ${{ needs.version.outputs.kind == 'official' }}

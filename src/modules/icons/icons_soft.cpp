@@ -466,6 +466,38 @@ icon_draw_label(
 }
 
 void
+icon_draw_label_full(
+    void *hdc,
+    float x,
+    float y,
+    float w,
+    float h,
+    const wchar_t *text,
+    uint32_t rgb,
+    float px,
+    int weight
+)
+{
+    SoftDc *dc = as_dc(hdc);
+    if (!dc || !text || h < 4.0f) {
+        return;
+    }
+    int scale = (int)(px / 8.0f);
+    if (scale < 1) {
+        scale = 1;
+    }
+    int glyph_w = 6 * scale;
+    int glyph_h = 7 * scale;
+    int cy = (int)(y + (h - (float)glyph_h) * 0.5f);
+    int cx = (int)x;
+    (void)w;
+    (void)weight;
+    for (int i = 0; text[i]; ++i) {
+        draw_char(dc, cx + i * glyph_w, cy, scale, text[i], rgb, 255);
+    }
+}
+
+void
 icon_draw_label_center_alpha(
     void *hdc,
     float x,

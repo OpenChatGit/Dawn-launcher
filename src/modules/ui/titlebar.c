@@ -8,6 +8,9 @@
 #include "shared/os.h"
 
 #include <math.h>
+#include <stdio.h>
+#include <string.h>
+#include <wchar.h>
 
 #define ACCOUNT_MENU_W 248.0f
 #define ACCOUNT_INSET 12.0f
@@ -18,6 +21,12 @@
 #define ACCOUNT_PILL_H 34.0f
 #define ACCOUNT_ROW_GAP 10.0f
 #define ACCOUNT_DIVIDER_GAP 10.0f
+#define UPDATE_PAD_X 10.0f
+#define UPDATE_ICON_GAP 6.0f
+#define UPDATE_TEXT_PX 12.0f
+#define UPDATE_TIP_H 26.0f
+#define UPDATE_TIP_PAD 12.0f
+#define UPDATE_TIP_GAP 6.0f
 
 typedef struct TitlebarLayout {
     int btn;
@@ -28,6 +37,8 @@ typedef struct TitlebarLayout {
     int close_x;
     int min_x;
     int avatar_x;
+    int update_x;
+    int update_w;
     int menu_x;
     int menu_y;
     int menu_w;
@@ -45,13 +56,22 @@ typedef struct TitlebarLayout {
     int settings_y;
     int icon_s;
     int text_x;
+    int tip_x;
+    int tip_y;
+    int tip_w;
+    int tip_h;
 } TitlebarLayout;
 
 static float g_hover_min;
 static float g_hover_close;
 static float g_hover_avatar;
+static float g_hover_update;
+static float g_hover_update_ok;
+static float g_hover_update_close;
+static int g_update_open;
 static float g_hover_signin;
 static float g_hover_settings;
+static float g_hover_tip;
 static float g_menu;
 static int g_open;
 
@@ -104,6 +124,47 @@ layout(Platform *platform, TitlebarLayout *out)
     out->close_x = platform->width - out->pad - out->btn;
     out->min_x = out->close_x - out->gap - out->btn;
     out->avatar_x = out->min_x - out->gap - out->btn;
+    {
+        float icon_s = (float)out->btn * 0.42f;
+        float text_px = UPDATE_TEXT_PX * s;
+        float pad = UPDATE_PAD_X * s;
+        float gap = UPDATE_ICON_GAP * s;
+        float tw = 0.0f;
+        if (platform->hdc) {
+            tw = icon_measure_label(platform->hdc, L"New Version", text_px, 600);
+        }
+        if (tw < 8.0f) {
+            tw = 11.0f * text_px * 0.72f;
+        }
+        out->update_w = (int)(pad + icon_s + gap + tw + pad + 0.5f);
+    }
+    out->update_x = out->avatar_x - out->gap - out->update_w;
+    {
+        const char *ver = platform->update_version ? platform->update_version() : "";
+        float tip_pad = UPDATE_TIP_PAD * s;
+        float tw = 0.0f;
+        wchar_t tip[48];
+
+        tip[0] = 0;
+        if (ver && ver[0]) {
+            char line[48];
+            snprintf(line, sizeof(line), "v%s", ver);
+            os_utf8_to_wide(line, tip, 48);
+        }
+        if (tip[0] && platform->hdc) {
+            tw = icon_measure_label(platform->hdc, tip, 11.0f * s, 600);
+        }
+        if (tip[0] && tw < 8.0f) {
+            tw = (float)wcslen(tip) * 11.0f * s * 0.62f;
+        }
+        out->tip_h = px(UPDATE_TIP_H, s);
+        out->tip_w = tip[0] ? (int)(tip_pad + tw + tip_pad + 0.5f) : 0;
+        out->tip_x = out->update_x - px(UPDATE_TIP_GAP, s) - out->tip_w;
+        if (out->tip_x < out->pad) {
+            out->tip_x = out->pad;
+        }
+        out->tip_y = out->y + (out->btn - out->tip_h) / 2;
+    }
 
     int inset = px(ACCOUNT_INSET, s);
     int div = px(ACCOUNT_DIVIDER_GAP, s);
@@ -164,6 +225,100 @@ control_button(
         stroke = 1.0f;
     }
     icon_draw(platform->hdc, icon, x + size * 0.5f, y + size * 0.5f, icon_size, fg, stroke);
+}
+
+static int
+update_ready(Platform *platform)
+{
+    return platform && platform->update_available && platform->update_available();
+}
+
+static void
+update_chip(Platform *platform, const TitlebarLayout *L, float hover, int pressed)
+{
+    const ThemeChrome *chrome = theme_chrome();
+    float s = platform->dpi_scale > 0.1f ? platform->dpi_scale : 1.0f;
+    float x = (float)L->update_x;
+    float y = (float)L->y;
+    float w = (float)L->update_w;
+    float h = (float)L->btn;
+    float pad = UPDATE_PAD_X * s;
+    float icon_s = h * 0.42f;
+    float gap = UPDATE_ICON_GAP * s;
+    float use = pressed ? 1.0f : hover;
+    uint32_t fg = use > 0.15f ? chrome->hover : chrome->muted;
+    float stroke = icon_s * (1.75f / 24.0f);
+    int fill = (int)(use * (pressed ? 48.0f : 28.0f));
+    float text_x = x + pad + icon_s + gap;
+    float text_w = w - pad * 2.0f - icon_s - gap;
+
+    if (stroke < 1.0f) {
+        stroke = 1.0f;
+    }
+    if (fill > 0) {
+        float inset = 3.0f * s;
+        icon_round_rect(
+            platform->hdc,
+            x,
+            y + inset,
+            w,
+            h - inset * 2.0f,
+            (h - inset * 2.0f) * 0.5f,
+            chrome->hover,
+            fill
+        );
+    }
+    icon_draw(platform->hdc, ICON_DOWNLOAD, x + pad + icon_s * 0.5f, y + h * 0.5f, icon_s, fg, stroke);
+    icon_draw_label_full(
+        platform->hdc,
+        text_x,
+        y,
+        text_w,
+        h,
+        L"New Version",
+        fg,
+        UPDATE_TEXT_PX * s,
+        600
+    );
+}
+
+static void
+update_tooltip(Platform *platform, const TitlebarLayout *L, float open)
+{
+    const ThemeChrome *chrome = theme_chrome();
+    const char *ver = platform->update_version ? platform->update_version() : "";
+    float s = platform->dpi_scale > 0.1f ? platform->dpi_scale : 1.0f;
+    float x = (float)L->tip_x;
+    float y = (float)L->tip_y;
+    float w = (float)L->tip_w;
+    float h = (float)L->tip_h;
+    float pad = UPDATE_TIP_PAD * s;
+    int alpha = (int)(open * 255.0f + 0.5f);
+    char line[48];
+    wchar_t tip[48];
+
+    if (open < 0.02f || w < 8.0f || !ver || !ver[0]) {
+        return;
+    }
+    snprintf(line, sizeof(line), "v%s", ver);
+    os_utf8_to_wide(line, tip, 48);
+    if (alpha > 255) {
+        alpha = 255;
+    }
+    icon_round_rect(platform->hdc, x, y + 3.0f * s, w, h, h * 0.5f, 0x000000, alpha * 40 / 255);
+    icon_round_rect(platform->hdc, x, y, w, h, h * 0.5f, modal_panel_color(), alpha * 252 / 255);
+    icon_round_stroke(platform->hdc, x, y, w, h, h * 0.5f, chrome->muted, alpha * 40 / 255, 1.0f);
+    icon_draw_label_full(
+        platform->hdc,
+        x + pad,
+        y,
+        w - pad * 2.0f,
+        h,
+        tip,
+        chrome->title_color,
+        11.0f * s,
+        600
+    );
 }
 
 static void
@@ -421,13 +576,153 @@ account_menu(
 }
 
 int
+titlebar_modal_visible(void)
+{
+    return g_update_open;
+}
+
+static int
+update_modal_tick(Platform *platform, float dt)
+{
+    float s = platform->dpi_scale > 0.1f ? platform->dpi_scale : 1.0f;
+    float inset = (float)modal_px(MODAL_INSET, s);
+    float w = (float)modal_px(360, s);
+    float h = (float)modal_px(208, s);
+    float x;
+    float y;
+    float close_x;
+    float close_y;
+    float close_s;
+    float btn_w;
+    float btn_h = (float)modal_px(MODAL_BTN_H, s);
+    float btn_y;
+    float cancel_x;
+    float ok_x;
+    int busy = platform->update_busy && platform->update_busy();
+    int over_close;
+    int over_ok;
+    int over_cancel;
+    wchar_t title[64];
+    wchar_t body[160];
+    wchar_t status_w[160];
+    const char *ver = platform->update_version ? platform->update_version() : "";
+    const char *status = platform->update_status ? platform->update_status() : "";
+    char line[160];
+
+    if (w > (float)platform->width - 32.0f) {
+        w = (float)platform->width - 32.0f;
+    }
+    x = ((float)platform->width - w) * 0.5f;
+    y = ((float)platform->height - h) * 0.5f;
+    modal_place_close(x, y, w, s, &close_x, &close_y, &close_s);
+    btn_w = (w - inset * 2.0f - (float)modal_px(8, s)) * 0.5f;
+    btn_y = y + h - inset - btn_h;
+    cancel_x = x + inset;
+    ok_x = cancel_x + btn_w + (float)modal_px(8, s);
+    over_close = modal_hit(platform->mouse_x, platform->mouse_y, close_x, close_y, close_s, close_s);
+    over_ok = modal_hit(platform->mouse_x, platform->mouse_y, ok_x, btn_y, btn_w, btn_h);
+    over_cancel = modal_hit(platform->mouse_x, platform->mouse_y, cancel_x, btn_y, btn_w, btn_h);
+    g_hover_update_ok = approach(g_hover_update_ok, over_ok ? 1.0f : 0.0f, dt);
+    g_hover_update_close = approach(g_hover_update_close, (over_close || over_cancel) ? 1.0f : 0.0f, dt);
+
+    if (ver && ver[0]) {
+        snprintf(line, sizeof(line), "Dawn %s", ver);
+    } else {
+        snprintf(line, sizeof(line), "Update");
+    }
+    os_utf8_to_wide(line, title, 64);
+    os_utf8_to_wide(
+        busy ? "Downloading the new launcher and replacing this install." :
+            "Download the official build, replace this launcher, and restart.",
+        body,
+        160
+    );
+    if (status && status[0]) {
+        os_utf8_to_wide(status, status_w, 160);
+    } else {
+        status_w[0] = 0;
+    }
+
+    modal_draw_overlay(platform->hdc, (float)platform->width, (float)platform->height, 1.0f);
+    modal_draw_card(platform->hdc, x, y, w, h, 1.0f, s);
+    modal_draw_title(platform->hdc, x + inset, y + (float)modal_px(14, s), w - inset * 2.0f - close_s, (float)modal_px(20, s), title, s, 1.0f);
+    modal_draw_close(platform->hdc, close_x, close_y, close_s, g_hover_update_close, 1.0f);
+    modal_draw_subtitle(
+        platform->hdc,
+        x + inset,
+        y + (float)modal_px(42, s),
+        w - inset * 2.0f,
+        (float)modal_px(40, s),
+        body,
+        s,
+        1.0f
+    );
+    if (status_w[0]) {
+        modal_draw_subtitle(
+            platform->hdc,
+            x + inset,
+            y + (float)modal_px(88, s),
+            w - inset * 2.0f,
+            (float)modal_px(20, s),
+            status_w,
+            s,
+            1.0f
+        );
+    }
+    modal_draw_button(
+        platform->hdc,
+        cancel_x,
+        btn_y,
+        btn_w,
+        btn_h,
+        L"Not now",
+        ICON_X,
+        g_hover_update_close,
+        1.0f,
+        0,
+        s
+    );
+    modal_draw_button(
+        platform->hdc,
+        ok_x,
+        btn_y,
+        btn_w,
+        btn_h,
+        busy ? L"Working" : L"Update",
+        ICON_DOWNLOAD,
+        g_hover_update_ok,
+        1.0f,
+        busy,
+        s
+    );
+
+    if (!platform->mouse_pressed) {
+        return 1;
+    }
+    if (over_close || over_cancel) {
+        if (platform->update_cancel) {
+            platform->update_cancel();
+        }
+        g_update_open = 0;
+        return 1;
+    }
+    if (over_ok && !busy && platform->update_begin) {
+        platform->update_begin();
+    }
+    return 1;
+}
+
+int
 titlebar_wants_mouse(Platform *platform)
 {
     TitlebarLayout L;
     layout(platform, &L);
     int mx = platform->mouse_x;
     int my = platform->mouse_y;
-    if (g_open || g_menu > 0.02f) {
+    if (g_open || g_menu > 0.02f || g_update_open) {
+        return 1;
+    }
+    if (update_ready(platform) && hit(mx, my, L.update_x, L.y, L.update_w, L.btn)) {
         return 1;
     }
     return hit(mx, my, L.close_x, L.y, L.btn, L.btn) ||
@@ -441,11 +736,14 @@ titlebar_tick(Platform *platform, float dt)
     TitlebarLayout L;
     layout(platform, &L);
 
-    int modal_open = login_modal_visible() || settings_modal_visible();
+    int modal_open = login_modal_visible() || settings_modal_visible() || g_update_open;
+    int show_update = update_ready(platform);
     int mx = platform->mouse_x;
     int my = platform->mouse_y;
     int over_close = hit(mx, my, L.close_x, L.y, L.btn, L.btn);
     int over_min = hit(mx, my, L.min_x, L.y, L.btn, L.btn);
+    int over_update = show_update && !login_modal_visible() && !settings_modal_visible() &&
+        hit(mx, my, L.update_x, L.y, L.update_w, L.btn);
     int over_avatar = !modal_open && hit(mx, my, L.avatar_x, L.y, L.btn, L.btn);
     int over_menu = !modal_open && g_open && hit(mx, my, L.menu_x, L.menu_y, L.menu_w, L.menu_h);
     int over_settings = !modal_open && g_open && hit(mx, my, L.item_x, L.settings_y, L.item_w, L.item_h);
@@ -453,6 +751,12 @@ titlebar_tick(Platform *platform, float dt)
 
     g_hover_close = approach(g_hover_close, over_close ? 1.0f : 0.0f, dt);
     g_hover_min = approach(g_hover_min, over_min ? 1.0f : 0.0f, dt);
+    if (over_update || g_update_open) {
+        g_hover_update = approach(g_hover_update, 1.0f, dt);
+    } else {
+        g_hover_update = 0.0f;
+    }
+    g_hover_tip = over_update && !g_update_open ? 1.0f : 0.0f;
     g_hover_avatar = approach(g_hover_avatar, (over_avatar || g_open) ? 1.0f : 0.0f, dt);
     g_hover_signin = approach(g_hover_signin, over_item ? 1.0f : 0.0f, dt);
     g_hover_settings = approach(g_hover_settings, over_settings ? 1.0f : 0.0f, dt);
@@ -478,6 +782,10 @@ titlebar_tick(Platform *platform, float dt)
         1,
         ICON_X
     );
+    if (show_update) {
+        update_chip(platform, &L, g_hover_update, platform->mouse_down && over_update);
+        update_tooltip(platform, &L, g_hover_tip);
+    }
     avatar_button(platform, &L, g_hover_avatar, platform->mouse_down && over_avatar);
     account_menu(
         platform,
@@ -501,6 +809,11 @@ titlebar_tick(Platform *platform, float dt)
         px(3, platform->dpi_scale)
     );
 
+    if (g_update_open) {
+        update_modal_tick(platform, dt);
+        return;
+    }
+
     if (platform->mouse_pressed) {
         if (over_close) {
             g_open = 0;
@@ -508,6 +821,9 @@ titlebar_tick(Platform *platform, float dt)
         } else if (over_min) {
             g_open = 0;
             platform->minimize();
+        } else if (over_update) {
+            g_open = 0;
+            g_update_open = 1;
         } else if (over_avatar) {
             g_open = !g_open;
         } else if (over_settings) {

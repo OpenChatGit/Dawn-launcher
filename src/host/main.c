@@ -3,6 +3,7 @@
 #include "config.h"
 #include "hot_reload.h"
 #include "install_job.h"
+#include "self_update.h"
 #include "steam_auth.h"
 #include "watcher.h"
 #include "media.h"
@@ -46,8 +47,11 @@ WinMain(HINSTANCE instance, HINSTANCE prev, LPSTR cmd, int show)
 {
     (void)instance;
     (void)prev;
-    (void)cmd;
     (void)show;
+
+    if (cmd && strstr(cmd, "--add-openid-host")) {
+        return steam_auth_install_openid_host() ? 0 : 1;
+    }
 
     FreeConsole();
     debug_console_init();
@@ -90,6 +94,7 @@ main(void)
     media_init(NULL, g_app_root);
 #endif
     install_job_init(g_app_root);
+    self_update_init();
     steam_auth_init(g_app_root);
 
     static AppMemory memory;
@@ -126,6 +131,11 @@ main(void)
         window_pump(&window);
         media_poll();
         install_job_poll();
+        self_update_poll();
+        if (self_update_should_quit()) {
+            window.running = 0;
+            continue;
+        }
 
 #ifdef _WIN32
         float dt = elapsed_seconds(&last, freq);
@@ -223,6 +233,7 @@ main(void)
     watcher_shutdown();
     hot_reload_shutdown();
     steam_auth_shutdown();
+    self_update_shutdown();
     install_job_shutdown();
     media_shutdown();
     debug_console_shutdown();

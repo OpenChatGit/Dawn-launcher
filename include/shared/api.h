@@ -3,7 +3,7 @@
 
 #include "shared/types.h"
 
-#define APP_API_VERSION 25
+#define APP_API_VERSION 26
 #ifndef INSTALL_PART_DEPOTS
 #define INSTALL_PART_DEPOTS 1
 #define INSTALL_PART_DAWN 2
@@ -110,6 +110,12 @@ typedef struct Platform {
     int (*steam_owns_d2)(void);
     int (*steam_owns_forsaken)(void);
     int (*steam_owns_shadowkeep)(void);
+    int (*update_available)(void);
+    const char *(*update_version)(void);
+    int (*update_busy)(void);
+    const char *(*update_status)(void);
+    int (*update_begin)(void);
+    void (*update_cancel)(void);
 } Platform;
 
 typedef struct AppMemory {

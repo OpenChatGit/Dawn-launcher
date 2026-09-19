@@ -6,6 +6,7 @@
 #define TITLEBAR_HEIGHT 46
 
 int titlebar_wants_mouse(Platform *platform);
+int titlebar_modal_visible(void);
 void titlebar_tick(Platform *platform, float dt);
 
 #endif
