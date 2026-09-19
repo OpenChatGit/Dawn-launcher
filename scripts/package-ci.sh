@@ -69,7 +69,7 @@ fi
 
 DD_ZIP="$DIST/depotdownloader.zip"
 mkdir -p "$DIST"
-curl -fsSL "$DD_URL" -o "$DD_ZIP"
+curl -fsSL -A "DawnLauncher/${APP_VERSION:-0.3.2}" "$DD_URL" -o "$DD_ZIP"
 python - "$DD_ZIP" "$STAGE/tools/DepotDownloader" <<'PY'
 import sys, zipfile
 zip_path, dest = sys.argv[1], sys.argv[2]
@@ -90,9 +90,9 @@ if [ ! -f "$STAGE/tools/DepotDownloader/$DD_NAME" ]; then
     exit 1
 fi
 
-DAWN_BUNDLE_URL="https://github.com/isinternets/Dawn/releases/download/0.1.3/Dawn-0.1.3.zip"
+DAWN_BUNDLE_URL="https://github.com/isinternets/Dawn/releases/download/v0.1.3/Dawn-0.1.3.zip"
 DAWN_BUNDLE_ZIP="$DIST/dawn-0.1.3.zip"
-curl -fsSL -L "$DAWN_BUNDLE_URL" -o "$DAWN_BUNDLE_ZIP"
+curl -fsSL -A "DawnLauncher/${APP_VERSION:-0.3.2}" "$DAWN_BUNDLE_URL" -o "$DAWN_BUNDLE_ZIP"
 python - "$DAWN_BUNDLE_ZIP" "$STAGE/tools/dawn-release" <<'PY'
 import sys, zipfile
 zip_path, dest = sys.argv[1], sys.argv[2]
