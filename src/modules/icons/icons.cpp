@@ -43,7 +43,7 @@ inter_family(void)
             g_faces->AddFontFile(wide);
         }
     }
-    g_family = new FontFamily(L"Inter", g_faces);
+    g_family = new FontFamily(L"IBM Plex Sans", g_faces);
     if (g_family->GetLastStatus() != Ok) {
         delete g_family;
         g_family = NULL;

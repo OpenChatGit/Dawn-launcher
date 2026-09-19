@@ -11,12 +11,28 @@ if [ -d /mnt/wslg/runtime-dir ]; then
     export XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir
 fi
 
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=linux-deps.sh
+. "$ROOT/scripts/linux-deps.sh"
+
 echo "HOME=$HOME"
 echo "DISPLAY=$DISPLAY"
 echo "USER=$(whoami)"
 echo "PWD=$(pwd)"
 ls /home/nicol >/dev/null
-dpkg -s libcurl4-openssl-dev 2>/dev/null | grep Status || echo "libcurl4-openssl-dev: missing"
+
+req="$(dawn_linux_missing_required | tr '\n' ' ')"
+run="$(dawn_linux_missing_runtime | tr '\n' ' ')"
+if [ -z "${req// /}" ]; then
+    echo "build_packages=ok"
+else
+    echo "build_packages=missing ${req}"
+fi
+if [ -z "${run// /}" ]; then
+    echo "runtime_packages=ok"
+else
+    echo "runtime_packages=missing ${run}"
+fi
 if [ -S /tmp/.X11-unix/X0 ] || [ -S /mnt/wslg/.X11-unix/X0 ]; then
     echo "x11_socket=yes"
 else

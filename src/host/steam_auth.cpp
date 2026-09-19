@@ -506,6 +506,67 @@ read_loginusers(const char *path, const char *steamid, char *out, int max)
     return ok;
 }
 
+#ifndef _WIN32
+static int
+win_to_wsl(const char *win, char *out, int max)
+{
+    char drive;
+    const char *rest;
+    size_t n;
+
+    if (!win || !out || max < 8) {
+        return 0;
+    }
+    if (win[0] == '/') {
+        snprintf(out, (size_t)max, "%s", win);
+        return out[0] != '\0';
+    }
+    if (!(((win[0] >= 'A' && win[0] <= 'Z') || (win[0] >= 'a' && win[0] <= 'z')) &&
+          win[1] == ':' && (win[2] == '\\' || win[2] == '/'))) {
+        return 0;
+    }
+    drive = win[0];
+    if (drive >= 'A' && drive <= 'Z') {
+        drive = (char)(drive - 'A' + 'a');
+    }
+    rest = win + 3;
+    n = (size_t)snprintf(out, (size_t)max, "/mnt/%c/", drive);
+    if (n >= (size_t)max) {
+        return 0;
+    }
+    for (; *rest && n + 1 < (size_t)max; rest++) {
+        out[n++] = (*rest == '\\') ? '/' : *rest;
+    }
+    out[n] = '\0';
+    return 1;
+}
+
+static int
+copy_if_exists(char *out, int max, const char *path)
+{
+    if (!path || !path[0] || access(path, F_OK) != 0) {
+        return 0;
+    }
+    snprintf(out, (size_t)max, "%s", path);
+    return 1;
+}
+#endif
+
+static int
+try_loginusers_root(const char *root, const char *steamid, char *name, int name_max)
+{
+    char cfg[MAX_PATH];
+    char path[MAX_PATH];
+
+    if (!root || !root[0] || !os_join(cfg, sizeof(cfg), root, "config")) {
+        return 0;
+    }
+    if (!os_join(path, sizeof(path), cfg, "loginusers.vdf")) {
+        return 0;
+    }
+    return read_loginusers(path, steamid, name, name_max);
+}
+
 static int
 steam_client_root(char *out, int max)
 {
@@ -530,47 +591,155 @@ steam_client_root(char *out, int max)
     snprintf(out, (size_t)max, "C:\\Program Files (x86)\\Steam");
     return GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
 #else
+    char tmp[MAX_PATH];
     const char *home = getenv("HOME");
-    if (!home || !home[0] || max < 8) {
+
+    if (!out || max < 8) {
         return 0;
     }
-    snprintf(out, (size_t)max, "%s/.local/share/Steam", home);
-    if (access(out, F_OK) == 0) {
+    out[0] = '\0';
+    if (home && home[0]) {
+        snprintf(tmp, sizeof(tmp), "%s/.local/share/Steam", home);
+        if (copy_if_exists(out, max, tmp)) {
+            return 1;
+        }
+        snprintf(tmp, sizeof(tmp), "%s/.steam/steam", home);
+        if (copy_if_exists(out, max, tmp)) {
+            return 1;
+        }
+        snprintf(tmp, sizeof(tmp), "%s/.steam/root", home);
+        if (copy_if_exists(out, max, tmp)) {
+            return 1;
+        }
+    }
+    if (copy_if_exists(out, max, "/mnt/c/Program Files (x86)/Steam")) {
         return 1;
     }
-    snprintf(out, (size_t)max, "%s/.steam/steam", home);
-    if (access(out, F_OK) == 0) {
+    if (copy_if_exists(out, max, "/mnt/c/Program Files/Steam")) {
         return 1;
     }
-    snprintf(out, (size_t)max, "%s/.steam/root", home);
-    return access(out, F_OK) == 0;
+    return 0;
 #endif
 }
+
+#ifndef _WIN32
+static int
+load_dd_user_line(const char *path)
+{
+    FILE *file;
+    char line[STEAM_DD_USER_MAX];
+
+    if (!path || !path[0]) {
+        return 0;
+    }
+    file = fopen(path, "rb");
+    if (!file) {
+        return 0;
+    }
+    if (!fgets(line, (int)sizeof(line), file)) {
+        fclose(file);
+        return 0;
+    }
+    fclose(file);
+    trim_line(line);
+    if (!line[0]) {
+        return 0;
+    }
+    steam_auth_set_dd_user(line);
+    return 1;
+}
+
+static int
+load_dd_user_session(const char *path)
+{
+    FILE *file;
+    char line[MAX_PATH + 32];
+
+    if (!path || !path[0]) {
+        return 0;
+    }
+    file = fopen(path, "rb");
+    if (!file) {
+        return 0;
+    }
+    while (fgets(line, (int)sizeof(line), file)) {
+        trim_line(line);
+        if (strncmp(line, "dd_user=", 8) == 0 && line[8]) {
+            fclose(file);
+            steam_auth_set_dd_user(line + 8);
+            return 1;
+        }
+    }
+    fclose(file);
+    return 0;
+}
+#endif
 
 static void
 resolve_steam_account_name(void)
 {
     char steamid[STEAM_ID_MAX];
     char root[MAX_PATH];
-    char path[MAX_PATH];
     char name[STEAM_DD_USER_MAX];
 
     EnterCriticalSection(&g_lock);
     snprintf(steamid, sizeof(steamid), "%s", g_id);
     LeaveCriticalSection(&g_lock);
-    if (!steamid[0] || !steam_client_root(root, (int)sizeof(root))) {
+    if (!steamid[0]) {
         return;
     }
-#ifdef _WIN32
-    snprintf(path, sizeof(path), "%s\\config\\loginusers.vdf", root);
-#else
-    snprintf(path, sizeof(path), "%s/config/loginusers.vdf", root);
-#endif
     name[0] = '\0';
-    if (!read_loginusers(path, steamid, name, (int)sizeof(name))) {
+    if (steam_client_root(root, (int)sizeof(root)) &&
+        try_loginusers_root(root, steamid, name, (int)sizeof(name))) {
+        steam_auth_set_dd_user(name);
+        debug_log("steam: dd user from Steam client");
         return;
     }
-    steam_auth_set_dd_user(name);
+#ifndef _WIN32
+    {
+        const char *extra[] = {
+            "/mnt/c/Program Files (x86)/Steam",
+            "/mnt/c/Program Files/Steam"
+        };
+        const char *up = getenv("USERPROFILE");
+        const char *user = getenv("USER");
+        char tmp[MAX_PATH];
+        char path[MAX_PATH];
+        size_t i;
+
+        for (i = 0; i < sizeof(extra) / sizeof(extra[0]); i++) {
+            if (try_loginusers_root(extra[i], steamid, name, (int)sizeof(name))) {
+                steam_auth_set_dd_user(name);
+                debug_log("steam: dd user from Windows Steam");
+                return;
+            }
+        }
+        if (up && win_to_wsl(up, tmp, (int)sizeof(tmp))) {
+            snprintf(path, sizeof(path), "%s/AppData/Local/Dawn/depot_user.txt", tmp);
+            if (load_dd_user_line(path)) {
+                debug_log("steam: dd user from Windows Dawn");
+                return;
+            }
+            snprintf(path, sizeof(path), "%s/AppData/Local/Dawn/steam_session.txt", tmp);
+            if (load_dd_user_session(path)) {
+                debug_log("steam: dd user from Windows session");
+                return;
+            }
+        }
+        if (user && user[0]) {
+            snprintf(path, sizeof(path), "/mnt/c/Users/%s/AppData/Local/Dawn/depot_user.txt", user);
+            if (load_dd_user_line(path)) {
+                debug_log("steam: dd user from /mnt/c Users");
+                return;
+            }
+            snprintf(path, sizeof(path), "/mnt/c/Users/%s/AppData/Local/Dawn/steam_session.txt", user);
+            if (load_dd_user_session(path)) {
+                debug_log("steam: dd user from /mnt/c session");
+                return;
+            }
+        }
+    }
+#endif
 }
 
 static void

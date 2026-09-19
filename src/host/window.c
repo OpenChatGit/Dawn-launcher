@@ -597,7 +597,7 @@ cached_font(int px, int weight)
     HFONT font = CreateFontW(
         -px, 0, 0, 0, weight, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Inter"
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"IBM Plex Sans"
     );
     if (!font) {
         font = CreateFontW(
@@ -804,7 +804,7 @@ window_create(HostWindow *window, const char *title, int width, int height)
     window->font = CreateFontW(
         -13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Inter"
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"IBM Plex Sans"
     );
     if (!window->font) {
         window->font = CreateFontW(

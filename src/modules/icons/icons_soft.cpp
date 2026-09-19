@@ -1,9 +1,16 @@
 #include "shared/icons.h"
 #include "shared/app_font.h"
 #include "shared/draw.h"
+#include "shared/draw_vg.h"
 #include "shared/os.h"
 #include "shared/soft_font.h"
 #include "shared/svg_rast.h"
+
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_JPEG
+#define STBI_ONLY_PNG
+#define STBI_NO_FAILURE_STRINGS
+#include "third_party/stb_image.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -21,6 +28,10 @@ static int g_icon_alpha = 255;
 static SvgMask g_steam_src;
 static SvgMask g_steam_fit;
 static int g_steam_fit_dim;
+static unsigned char *g_avatar_rgba;
+static int g_avatar_w;
+static int g_avatar_h;
+static char g_avatar_loaded[MAX_PATH];
 
 static void put(SoftDc *dc, int x, int y, uint32_t rgb, int alpha);
 
@@ -43,6 +54,7 @@ icon_set_root(const char *project_root)
 {
     snprintf(g_root, sizeof(g_root), "%s", project_root ? project_root : ".");
     app_font_set_root(g_root);
+    vg_reset();
     svg_rast_free(g_steam_src.rgba);
     svg_rast_free(g_steam_fit.rgba);
     g_steam_src.rgba = NULL;
@@ -50,6 +62,13 @@ icon_set_root(const char *project_root)
     g_steam_fit.rgba = NULL;
     g_steam_fit.dim = 0;
     g_steam_fit_dim = 0;
+    if (g_avatar_rgba) {
+        stbi_image_free(g_avatar_rgba);
+        g_avatar_rgba = NULL;
+    }
+    g_avatar_w = 0;
+    g_avatar_h = 0;
+    g_avatar_loaded[0] = '\0';
 }
 
 void
@@ -68,6 +87,12 @@ static SoftDc *
 as_dc(void *hdc)
 {
     return (SoftDc *)hdc;
+}
+
+static int
+bind_dc(SoftDc *dc)
+{
+    return dc && dc->pixels && vg_begin(dc->pixels, dc->width, dc->height);
 }
 
 static void
@@ -140,6 +165,10 @@ icon_fill_rect(void *hdc, float x, float y, float w, float h, uint32_t rgb, int 
     if (!dc || !dc->pixels || w < 1.0f || h < 1.0f || alpha <= 0) {
         return;
     }
+    if (bind_dc(dc)) {
+        vg_fill_rect(x, y, w, h, rgb, alpha);
+        return;
+    }
     x0 = (int)x;
     y0 = (int)y;
     x1 = (int)(x + w + 0.5f);
@@ -195,6 +224,10 @@ icon_round_rect_corners(
     if (!dc || w < 1.0f || h < 1.0f || alpha <= 0) {
         return;
     }
+    if (bind_dc(dc)) {
+        vg_fill_round_rect(x, y, w, h, tl, tr, br, bl, rgb, alpha);
+        return;
+    }
     float r = tl;
     if (r < 0.0f) {
         r = 0.0f;
@@ -228,6 +261,10 @@ icon_round_stroke(
 {
     SoftDc *dc = as_dc(hdc);
     if (!dc || w < 1.0f || h < 1.0f || alpha <= 0) {
+        return;
+    }
+    if (bind_dc(dc)) {
+        vg_stroke_round_rect(x, y, w, h, radius, stroke, rgb, alpha);
         return;
     }
     if (stroke < 1.0f) {
@@ -478,96 +515,6 @@ fill_circle(SoftDc *dc, float cx, float cy, float r, uint32_t rgb, int alpha)
     }
 }
 
-static void
-stroke_circle(SoftDc *dc, float cx, float cy, float r, float width, uint32_t rgb, int alpha)
-{
-    int x0 = (int)floorf(cx - r - width - 1.0f);
-    int y0 = (int)floorf(cy - r - width - 1.0f);
-    int x1 = (int)ceilf(cx + r + width + 1.0f);
-    int y1 = (int)ceilf(cy + r + width + 1.0f);
-    int y;
-    for (y = y0; y <= y1; y++) {
-        int x;
-        for (x = x0; x <= x1; x++) {
-            float d = fabsf(sqrtf(((float)x + 0.5f - cx) * ((float)x + 0.5f - cx) +
-                ((float)y + 0.5f - cy) * ((float)y + 0.5f - cy)) - r) - width * 0.5f;
-            float cover = clamp01(0.5f - d);
-            if (cover > 0.0f) {
-                put(dc, x, y, rgb, (int)(alpha * cover + 0.5f));
-            }
-        }
-    }
-}
-
-static void
-fill_tri(
-    SoftDc *dc,
-    float x0,
-    float y0,
-    float x1,
-    float y1,
-    float x2,
-    float y2,
-    uint32_t rgb,
-    int alpha
-)
-{
-    float minx = x0;
-    float maxx = x0;
-    float miny = y0;
-    float maxy = y0;
-    float area;
-    int x;
-    int y;
-
-    if (x1 < minx) {
-        minx = x1;
-    }
-    if (x2 < minx) {
-        minx = x2;
-    }
-    if (x1 > maxx) {
-        maxx = x1;
-    }
-    if (x2 > maxx) {
-        maxx = x2;
-    }
-    if (y1 < miny) {
-        miny = y1;
-    }
-    if (y2 < miny) {
-        miny = y2;
-    }
-    if (y1 > maxy) {
-        maxy = y1;
-    }
-    if (y2 > maxy) {
-        maxy = y2;
-    }
-    area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
-    if (fabsf(area) < 0.01f) {
-        return;
-    }
-    for (y = (int)floorf(miny) - 1; y <= (int)ceilf(maxy) + 1; y++) {
-        for (x = (int)floorf(minx) - 1; x <= (int)ceilf(maxx) + 1; x++) {
-            float px = (float)x + 0.5f;
-            float py = (float)y + 0.5f;
-            float w0 = ((x1 - px) * (y2 - py) - (x2 - px) * (y1 - py)) / area;
-            float w1 = ((x2 - px) * (y0 - py) - (x0 - px) * (y2 - py)) / area;
-            float w2 = 1.0f - w0 - w1;
-            float edge = w0 < w1 ? w0 : w1;
-            float cover;
-            if (w2 < edge) {
-                edge = w2;
-            }
-            cover = clamp01(0.5f + edge * sqrtf(fabsf(area)) * 0.15f);
-            if (w0 >= -0.15f && w1 >= -0.15f && w2 >= -0.15f && cover > 0.0f) {
-                put(dc, x, y, rgb, (int)(alpha * cover + 0.5f));
-            }
-        }
-    }
-}
-
 void
 icon_draw(void *hdc, IconId id, float cx, float cy, float size, uint32_t rgb, float stroke)
 {
@@ -586,102 +533,92 @@ icon_draw(void *hdc, IconId id, float cx, float cy, float size, uint32_t rgb, fl
     }
     xf = icon_xf(cx, cy, size);
     sw = icon_stroke(size, stroke);
+    if (bind_dc(dc)) {
+        switch (id) {
+        case ICON_X:
+            vg_line(ix(&xf, 6.0f), iy(&xf, 6.0f), ix(&xf, 18.0f), iy(&xf, 18.0f), sw, rgb, a);
+            vg_line(ix(&xf, 18.0f), iy(&xf, 6.0f), ix(&xf, 6.0f), iy(&xf, 18.0f), sw, rgb, a);
+            break;
+        case ICON_MINUS:
+            vg_line(ix(&xf, 5.0f), iy(&xf, 12.0f), ix(&xf, 19.0f), iy(&xf, 12.0f), sw, rgb, a);
+            break;
+        case ICON_SQUARE:
+            vg_stroke_round_rect(ix(&xf, 6.0f), iy(&xf, 6.0f), 12.0f * xf.s, 12.0f * xf.s, 1.6f * xf.s, sw, rgb, a);
+            break;
+        case ICON_GLOBE:
+            vg_circle_stroke(ix(&xf, 12.0f), iy(&xf, 12.0f), 8.0f * xf.s, sw, rgb, a);
+            vg_ellipse_stroke(ix(&xf, 12.0f), iy(&xf, 12.0f), 3.0f * xf.s, 8.0f * xf.s, sw, rgb, a);
+            vg_line(ix(&xf, 4.0f), iy(&xf, 12.0f), ix(&xf, 20.0f), iy(&xf, 12.0f), sw, rgb, a);
+            break;
+        case ICON_SEARCH:
+            vg_circle_stroke(ix(&xf, 10.25f), iy(&xf, 10.25f), 5.25f * xf.s, sw, rgb, a);
+            vg_line(ix(&xf, 14.8f), iy(&xf, 14.8f), ix(&xf, 19.5f), iy(&xf, 19.5f), sw, rgb, a);
+            break;
+        case ICON_SETTINGS:
+            vg_circle_stroke(ix(&xf, 12.0f), iy(&xf, 12.0f), 2.8f * xf.s, sw, rgb, a);
+            vg_circle_stroke(ix(&xf, 12.0f), iy(&xf, 12.0f), 7.6f * xf.s, sw, rgb, a);
+            break;
+        case ICON_CHEVRON_DOWN:
+            vg_line(ix(&xf, 6.0f), iy(&xf, 9.0f), ix(&xf, 12.0f), iy(&xf, 15.0f), sw, rgb, a);
+            vg_line(ix(&xf, 12.0f), iy(&xf, 15.0f), ix(&xf, 18.0f), iy(&xf, 9.0f), sw, rgb, a);
+            break;
+        case ICON_CHEVRON_UP:
+            vg_line(ix(&xf, 6.0f), iy(&xf, 15.0f), ix(&xf, 12.0f), iy(&xf, 9.0f), sw, rgb, a);
+            vg_line(ix(&xf, 12.0f), iy(&xf, 9.0f), ix(&xf, 18.0f), iy(&xf, 15.0f), sw, rgb, a);
+            break;
+        case ICON_MENU:
+            vg_line(ix(&xf, 4.5f), iy(&xf, 8.0f), ix(&xf, 19.5f), iy(&xf, 8.0f), sw, rgb, a);
+            vg_line(ix(&xf, 4.5f), iy(&xf, 12.0f), ix(&xf, 19.5f), iy(&xf, 12.0f), sw, rgb, a);
+            vg_line(ix(&xf, 4.5f), iy(&xf, 16.0f), ix(&xf, 19.5f), iy(&xf, 16.0f), sw, rgb, a);
+            break;
+        case ICON_PLAY:
+            vg_triangle(
+                ix(&xf, 7.0f),
+                iy(&xf, 4.5f),
+                ix(&xf, 19.5f),
+                iy(&xf, 12.0f),
+                ix(&xf, 7.0f),
+                iy(&xf, 19.5f),
+                rgb,
+                a
+            );
+            break;
+        case ICON_PAUSE:
+            vg_fill_round_rect(ix(&xf, 6.0f), iy(&xf, 4.5f), 4.0f * xf.s, 15.0f * xf.s, 1.1f * xf.s, 1.1f * xf.s, 1.1f * xf.s, 1.1f * xf.s, rgb, a);
+            vg_fill_round_rect(ix(&xf, 14.0f), iy(&xf, 4.5f), 4.0f * xf.s, 15.0f * xf.s, 1.1f * xf.s, 1.1f * xf.s, 1.1f * xf.s, 1.1f * xf.s, rgb, a);
+            break;
+        case ICON_USER:
+            vg_circle_stroke(ix(&xf, 12.0f), iy(&xf, 8.0f), 4.0f * xf.s, sw, rgb, a);
+            vg_arc(ix(&xf, 12.0f), iy(&xf, 21.0f), 8.0f * xf.s, 0.0f, 3.14159265f, 1, sw, rgb, a);
+            break;
+        case ICON_LOG_IN:
+            vg_line(ix(&xf, 10.0f), iy(&xf, 7.0f), ix(&xf, 15.0f), iy(&xf, 12.0f), sw, rgb, a);
+            vg_line(ix(&xf, 15.0f), iy(&xf, 12.0f), ix(&xf, 10.0f), iy(&xf, 17.0f), sw, rgb, a);
+            vg_line(ix(&xf, 3.0f), iy(&xf, 12.0f), ix(&xf, 15.0f), iy(&xf, 12.0f), sw, rgb, a);
+            vg_line(ix(&xf, 15.0f), iy(&xf, 3.0f), ix(&xf, 19.0f), iy(&xf, 3.0f), sw, rgb, a);
+            vg_arc(ix(&xf, 19.0f), iy(&xf, 5.0f), 2.0f * xf.s, -1.5707963f, 0.0f, 0, sw, rgb, a);
+            vg_line(ix(&xf, 21.0f), iy(&xf, 5.0f), ix(&xf, 21.0f), iy(&xf, 19.0f), sw, rgb, a);
+            vg_arc(ix(&xf, 19.0f), iy(&xf, 19.0f), 2.0f * xf.s, 0.0f, 1.5707963f, 0, sw, rgb, a);
+            vg_line(ix(&xf, 19.0f), iy(&xf, 21.0f), ix(&xf, 15.0f), iy(&xf, 21.0f), sw, rgb, a);
+            break;
+        case ICON_DOWNLOAD:
+            vg_line(ix(&xf, 12.0f), iy(&xf, 3.0f), ix(&xf, 12.0f), iy(&xf, 15.0f), sw, rgb, a);
+            vg_line(ix(&xf, 7.0f), iy(&xf, 10.0f), ix(&xf, 12.0f), iy(&xf, 15.0f), sw, rgb, a);
+            vg_line(ix(&xf, 12.0f), iy(&xf, 15.0f), ix(&xf, 17.0f), iy(&xf, 10.0f), sw, rgb, a);
+            vg_line(ix(&xf, 4.0f), iy(&xf, 15.0f), ix(&xf, 4.0f), iy(&xf, 19.0f), sw, rgb, a);
+            vg_line(ix(&xf, 4.0f), iy(&xf, 19.0f), ix(&xf, 20.0f), iy(&xf, 19.0f), sw, rgb, a);
+            vg_line(ix(&xf, 20.0f), iy(&xf, 19.0f), ix(&xf, 20.0f), iy(&xf, 15.0f), sw, rgb, a);
+            break;
+        default:
+            vg_fill_round_rect(cx - size * 0.2f, cy - size * 0.2f, size * 0.4f, size * 0.4f, size * 0.06f, size * 0.06f, size * 0.06f, size * 0.06f, rgb, a);
+            break;
+        }
+        return;
+    }
     switch (id) {
     case ICON_X:
         stroke_line(dc, ix(&xf, 6.0f), iy(&xf, 6.0f), ix(&xf, 18.0f), iy(&xf, 18.0f), sw, rgb, a);
         stroke_line(dc, ix(&xf, 18.0f), iy(&xf, 6.0f), ix(&xf, 6.0f), iy(&xf, 18.0f), sw, rgb, a);
-        break;
-    case ICON_MINUS:
-        stroke_line(dc, ix(&xf, 5.0f), iy(&xf, 12.0f), ix(&xf, 19.0f), iy(&xf, 12.0f), sw, rgb, a);
-        break;
-    case ICON_SQUARE:
-        icon_round_stroke(hdc, ix(&xf, 6.0f), iy(&xf, 6.0f), 12.0f * xf.s, 12.0f * xf.s, 1.6f * xf.s, rgb, a, sw);
-        break;
-    case ICON_GLOBE:
-        stroke_circle(dc, ix(&xf, 12.0f), iy(&xf, 12.0f), 8.0f * xf.s, sw, rgb, a);
-        stroke_circle(dc, ix(&xf, 12.0f), iy(&xf, 12.0f), 3.0f * xf.s, sw, rgb, a);
-        stroke_line(dc, ix(&xf, 4.0f), iy(&xf, 12.0f), ix(&xf, 20.0f), iy(&xf, 12.0f), sw, rgb, a);
-        break;
-    case ICON_SEARCH:
-        stroke_circle(dc, ix(&xf, 10.25f), iy(&xf, 10.25f), 5.25f * xf.s, sw, rgb, a);
-        stroke_line(dc, ix(&xf, 14.8f), iy(&xf, 14.8f), ix(&xf, 19.5f), iy(&xf, 19.5f), sw, rgb, a);
-        break;
-    case ICON_SETTINGS:
-        stroke_circle(dc, ix(&xf, 12.0f), iy(&xf, 12.0f), 2.8f * xf.s, sw, rgb, a);
-        stroke_circle(dc, ix(&xf, 12.0f), iy(&xf, 12.0f), 7.6f * xf.s, sw, rgb, a);
-        break;
-    case ICON_CHEVRON_DOWN:
-        stroke_line(dc, ix(&xf, 6.0f), iy(&xf, 9.0f), ix(&xf, 12.0f), iy(&xf, 15.0f), sw, rgb, a);
-        stroke_line(dc, ix(&xf, 12.0f), iy(&xf, 15.0f), ix(&xf, 18.0f), iy(&xf, 9.0f), sw, rgb, a);
-        break;
-    case ICON_CHEVRON_UP:
-        stroke_line(dc, ix(&xf, 6.0f), iy(&xf, 15.0f), ix(&xf, 12.0f), iy(&xf, 9.0f), sw, rgb, a);
-        stroke_line(dc, ix(&xf, 12.0f), iy(&xf, 9.0f), ix(&xf, 18.0f), iy(&xf, 15.0f), sw, rgb, a);
-        break;
-    case ICON_MENU:
-        stroke_line(dc, ix(&xf, 4.5f), iy(&xf, 8.0f), ix(&xf, 19.5f), iy(&xf, 8.0f), sw, rgb, a);
-        stroke_line(dc, ix(&xf, 4.5f), iy(&xf, 12.0f), ix(&xf, 19.5f), iy(&xf, 12.0f), sw, rgb, a);
-        stroke_line(dc, ix(&xf, 4.5f), iy(&xf, 16.0f), ix(&xf, 19.5f), iy(&xf, 16.0f), sw, rgb, a);
-        break;
-    case ICON_PLAY:
-        fill_tri(
-            dc,
-            ix(&xf, 7.0f),
-            iy(&xf, 4.5f),
-            ix(&xf, 19.5f),
-            iy(&xf, 12.0f),
-            ix(&xf, 7.0f),
-            iy(&xf, 19.5f),
-            rgb,
-            a
-        );
-        break;
-    case ICON_PAUSE:
-        icon_round_rect(hdc, ix(&xf, 6.0f), iy(&xf, 4.5f), 4.0f * xf.s, 15.0f * xf.s, 1.1f * xf.s, rgb, a);
-        icon_round_rect(hdc, ix(&xf, 14.0f), iy(&xf, 4.5f), 4.0f * xf.s, 15.0f * xf.s, 1.1f * xf.s, rgb, a);
-        break;
-    case ICON_USER: {
-        float hcx = ix(&xf, 12.0f);
-        float hcy = iy(&xf, 8.0f);
-        float bcx = ix(&xf, 12.0f);
-        float bcy = iy(&xf, 21.0f);
-        float br = 8.0f * xf.s;
-        int uy;
-        stroke_circle(dc, hcx, hcy, 4.0f * xf.s, sw, rgb, a);
-        for (uy = (int)floorf(bcy - br - sw - 1.0f); uy <= (int)ceilf(bcy + 1.0f); uy++) {
-            int ux;
-            for (ux = (int)floorf(bcx - br - sw - 1.0f); ux <= (int)ceilf(bcx + br + sw + 1.0f); ux++) {
-                float px = (float)ux + 0.5f;
-                float py = (float)uy + 0.5f;
-                float d;
-                float cover;
-                if (py > bcy + 0.6f) {
-                    continue;
-                }
-                d = fabsf(sqrtf((px - bcx) * (px - bcx) + (py - bcy) * (py - bcy)) - br) - sw * 0.5f;
-                cover = clamp01(0.5f - d);
-                if (cover > 0.0f) {
-                    put(dc, ux, uy, rgb, (int)(a * cover + 0.5f));
-                }
-            }
-        }
-        break;
-    }
-    case ICON_LOG_IN:
-        stroke_line(dc, ix(&xf, 10.0f), iy(&xf, 7.0f), ix(&xf, 15.0f), iy(&xf, 12.0f), sw, rgb, a);
-        stroke_line(dc, ix(&xf, 15.0f), iy(&xf, 12.0f), ix(&xf, 10.0f), iy(&xf, 17.0f), sw, rgb, a);
-        stroke_line(dc, ix(&xf, 3.0f), iy(&xf, 12.0f), ix(&xf, 15.0f), iy(&xf, 12.0f), sw, rgb, a);
-        stroke_line(dc, ix(&xf, 15.0f), iy(&xf, 3.0f), ix(&xf, 19.0f), iy(&xf, 3.0f), sw, rgb, a);
-        stroke_line(dc, ix(&xf, 21.0f), iy(&xf, 5.0f), ix(&xf, 21.0f), iy(&xf, 19.0f), sw, rgb, a);
-        stroke_line(dc, ix(&xf, 19.0f), iy(&xf, 21.0f), ix(&xf, 15.0f), iy(&xf, 21.0f), sw, rgb, a);
-        break;
-    case ICON_DOWNLOAD:
-        stroke_line(dc, ix(&xf, 12.0f), iy(&xf, 3.0f), ix(&xf, 12.0f), iy(&xf, 15.0f), sw, rgb, a);
-        stroke_line(dc, ix(&xf, 7.0f), iy(&xf, 10.0f), ix(&xf, 12.0f), iy(&xf, 15.0f), sw, rgb, a);
-        stroke_line(dc, ix(&xf, 12.0f), iy(&xf, 15.0f), ix(&xf, 17.0f), iy(&xf, 10.0f), sw, rgb, a);
-        stroke_line(dc, ix(&xf, 4.0f), iy(&xf, 15.0f), ix(&xf, 4.0f), iy(&xf, 19.0f), sw, rgb, a);
-        stroke_line(dc, ix(&xf, 4.0f), iy(&xf, 19.0f), ix(&xf, 20.0f), iy(&xf, 19.0f), sw, rgb, a);
-        stroke_line(dc, ix(&xf, 20.0f), iy(&xf, 19.0f), ix(&xf, 20.0f), iy(&xf, 15.0f), sw, rgb, a);
         break;
     default:
         icon_round_rect(hdc, cx - size * 0.2f, cy - size * 0.2f, size * 0.4f, size * 0.4f, size * 0.06f, rgb, a);
@@ -719,12 +656,21 @@ draw_char(SoftDc *dc, int x, int y, int scale, wchar_t ch, uint32_t rgb, int alp
 float
 icon_measure_label(void *hdc, const wchar_t *text, float px, int weight)
 {
-    (void)hdc;
+    SoftDc *dc = as_dc(hdc);
+    float tw;
+
     if (!text || !text[0] || px < 1.0f) {
         return 0.0f;
     }
+    if (dc) {
+        bind_dc(dc);
+    }
+    tw = vg_text_width(text, px, weight);
+    if (tw > 0.0f) {
+        return tw;
+    }
     if (has_inter()) {
-        float tw = app_font_measure_wide(text, px, weight);
+        tw = app_font_measure_wide(text, px, weight);
         if (tw > 0.0f) {
             return tw;
         }
@@ -758,6 +704,10 @@ icon_draw_label_alpha(
 {
     SoftDc *dc = as_dc(hdc);
     if (!dc || !text || w < 4.0f || h < 4.0f || alpha <= 0) {
+        return;
+    }
+    if (bind_dc(dc) && vg_text_width(text, px, weight) > 0.0f) {
+        vg_text(x, y, w, h, text, px, weight, rgb, alpha, VG_ALIGN_LEFT);
         return;
     }
     if (has_inter()) {
@@ -818,6 +768,10 @@ icon_draw_label_end_alpha(
     if (!dc || !text || w < 4.0f || h < 4.0f || alpha <= 0) {
         return;
     }
+    if (bind_dc(dc) && vg_text_width(text, px, weight) > 0.0f) {
+        vg_text(x, y, w, h, text, px, weight, rgb, alpha, VG_ALIGN_RIGHT);
+        return;
+    }
     if (has_inter()) {
         app_font_draw_wide(
             plot_dc,
@@ -868,6 +822,10 @@ icon_draw_label_full(
     int weight
 )
 {
+    if (bind_dc(as_dc(hdc)) && vg_text_width(text, px, weight) > 0.0f) {
+        vg_text(x, y, w > 4.0f ? w : 4096.0f, h, text, px, weight, rgb, 255, VG_ALIGN_LEFT);
+        return;
+    }
     if (has_inter()) {
         app_font_draw_wide(
             plot_dc,
@@ -928,6 +886,10 @@ icon_draw_label_center_alpha(
     if (!dc || !text || alpha <= 0) {
         return;
     }
+    if (bind_dc(dc) && vg_text_width(text, px, weight) > 0.0f) {
+        vg_text(x, y, w, h, text, px, weight, rgb, alpha, VG_ALIGN_CENTER);
+        return;
+    }
     if (has_inter()) {
         app_font_draw_wide(
             plot_dc,
@@ -978,6 +940,12 @@ icon_draw_label_shimmer(
 {
     SoftDc *dc = as_dc(hdc);
     if (!dc || !text || w < 4.0f || h < 4.0f || alpha <= 0) {
+        return;
+    }
+    if (bind_dc(dc) && vg_text_width(text, px, weight) > 0.0f) {
+        (void)shine;
+        (void)phase;
+        vg_text(x, y, w, h, text, px, weight, rgb, alpha, VG_ALIGN_RIGHT);
         return;
     }
     if (has_inter()) {
@@ -1056,9 +1024,127 @@ icon_draw_label_center(
     icon_draw_label_center_alpha(hdc, x, y, w, h, text, rgb, px, weight, 255);
 }
 
+static int
+avatar_load(const char *path)
+{
+    unsigned char *rgba;
+    int w;
+    int h;
+    int n;
+
+    if (!path || !path[0]) {
+        return 0;
+    }
+    if (g_avatar_rgba && strcmp(g_avatar_loaded, path) == 0) {
+        return 1;
+    }
+    if (g_avatar_rgba) {
+        stbi_image_free(g_avatar_rgba);
+        g_avatar_rgba = NULL;
+    }
+    g_avatar_w = 0;
+    g_avatar_h = 0;
+    g_avatar_loaded[0] = '\0';
+    rgba = stbi_load(path, &w, &h, &n, 4);
+    if (!rgba || w < 8 || h < 8) {
+        if (rgba) {
+            stbi_image_free(rgba);
+        }
+        return 0;
+    }
+    g_avatar_rgba = rgba;
+    g_avatar_w = w;
+    g_avatar_h = h;
+    snprintf(g_avatar_loaded, sizeof(g_avatar_loaded), "%s", path);
+    return 1;
+}
+
 void
 icon_draw_avatar(void *hdc, const char *path, float cx, float cy, float size)
 {
-    (void)path;
-    icon_round_rect(hdc, cx - size * 0.5f, cy - size * 0.5f, size, size, size * 0.5f, 0x66c0f4, 255);
+    SoftDc *dc = as_dc(hdc);
+    int dim;
+    int x;
+    int y;
+    float x0;
+    float y0;
+    float mid;
+    float radius;
+
+    if (!dc || !dc->pixels || size < 4.0f) {
+        return;
+    }
+    if (!avatar_load(path)) {
+        icon_round_rect(hdc, cx - size * 0.5f, cy - size * 0.5f, size, size, size * 0.5f, 0x66c0f4, 255);
+        return;
+    }
+    dim = (int)(size + 0.5f);
+    if (dim < 8) {
+        dim = 8;
+    }
+    x0 = cx - (float)dim * 0.5f;
+    y0 = cy - (float)dim * 0.5f;
+    mid = (float)dim * 0.5f;
+    radius = mid - 0.35f;
+    for (y = 0; y < dim; y++) {
+        int sy0 = y * g_avatar_h / dim;
+        int sy1 = (y + 1) * g_avatar_h / dim;
+        if (sy1 <= sy0) {
+            sy1 = sy0 + 1;
+        }
+        if (sy1 > g_avatar_h) {
+            sy1 = g_avatar_h;
+        }
+        for (x = 0; x < dim; x++) {
+            float dx = ((float)x + 0.5f) - mid;
+            float dy = ((float)y + 0.5f) - mid;
+            float cover = radius - sqrtf(dx * dx + dy * dy);
+            int sx0;
+            int sx1;
+            int sy;
+            unsigned r = 0;
+            unsigned g = 0;
+            unsigned b = 0;
+            unsigned a = 0;
+            unsigned n = 0;
+            int alpha;
+            uint32_t rgb;
+
+            if (cover <= 0.0f) {
+                continue;
+            }
+            if (cover > 1.0f) {
+                cover = 1.0f;
+            }
+            sx0 = x * g_avatar_w / dim;
+            sx1 = (x + 1) * g_avatar_w / dim;
+            if (sx1 <= sx0) {
+                sx1 = sx0 + 1;
+            }
+            if (sx1 > g_avatar_w) {
+                sx1 = g_avatar_w;
+            }
+            for (sy = sy0; sy < sy1; sy++) {
+                const unsigned char *row = g_avatar_rgba + (size_t)sy * (size_t)g_avatar_w * 4u;
+                int sx;
+                for (sx = sx0; sx < sx1; sx++) {
+                    const unsigned char *p = row + (size_t)sx * 4u;
+                    r += p[0];
+                    g += p[1];
+                    b += p[2];
+                    a += p[3];
+                    n += 1;
+                }
+            }
+            if (n == 0) {
+                n = 1;
+            }
+            alpha = (int)(((float)(a / n) * cover) + 0.5f);
+            if (alpha <= 0) {
+                continue;
+            }
+            rgb = ((r / n) << 16) | ((g / n) << 8) | (b / n);
+            put(dc, (int)(x0 + (float)x + 0.5f), (int)(y0 + (float)y + 0.5f), rgb, alpha);
+        }
+    }
 }

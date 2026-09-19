@@ -72,6 +72,7 @@ else()
         src/modules/icons/icons_soft.cpp
         src/modules/theme/theme_render_soft.cpp
         src/shared/svg_rast.cpp
+        src/shared/draw_vg.cpp
         src/shared/soft_font.c
     )
     list(APPEND HOST_SRC
@@ -169,7 +170,7 @@ else()
         target_link_libraries(host PRIVATE CURL::libcurl)
         target_compile_definitions(host PRIVATE APP_HAVE_CURL)
     endif()
-    target_link_libraries(app_logic PRIVATE m lunasvg::lunasvg)
+    target_link_libraries(app_logic PRIVATE m lunasvg::lunasvg plutovg::plutovg)
     target_compile_options(host PRIVATE -pthread)
     target_compile_options(app_logic PRIVATE -fPIC)
     set_target_properties(host PROPERTIES OUTPUT_NAME "host")

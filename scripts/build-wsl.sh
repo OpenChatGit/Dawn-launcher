@@ -4,38 +4,28 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=wsl-env.sh
 . "$ROOT/scripts/wsl-env.sh"
+# shellcheck source=linux-deps.sh
+. "$ROOT/scripts/linux-deps.sh"
 
 BUILD="$ROOT/build-linux"
 RUN=0
 TYPE=Release
+DEPS_ONLY=0
 
 for arg in "$@"; do
     case "$arg" in
         --run) RUN=1 ;;
         --debug) TYPE=Debug ;;
         --release) TYPE=Release ;;
+        --deps-only) DEPS_ONLY=1 ;;
     esac
 done
 
-need=()
-command -v cmake >/dev/null || need+=(cmake)
-command -v ninja >/dev/null || need+=(ninja-build)
-command -v g++ >/dev/null || need+=(g++)
-pkg-config --exists x11 2>/dev/null || need+=(libx11-dev)
-pkg-config --exists zlib 2>/dev/null || need+=(zlib1g-dev)
-dpkg -s pkg-config >/dev/null 2>&1 || need+=(pkg-config)
+dawn_linux_ensure_packages
 
-if [ "${#need[@]}" -gt 0 ]; then
-    echo "Missing packages: ${need[*]}"
-    echo "In Ubuntu WSL run:"
-    echo "  sudo apt update"
-    echo "  sudo apt install -y cmake ninja-build g++ pkg-config libx11-dev libcurl4-openssl-dev zlib1g-dev"
-    exit 1
-fi
-
-if ! pkg-config --exists libcurl 2>/dev/null; then
-    echo "Note: libcurl4-openssl-dev is missing. UI will build; Steam HTTP needs:"
-    echo "  sudo apt install -y libcurl4-openssl-dev"
+if [ "$DEPS_ONLY" -eq 1 ]; then
+    echo "Dependencies only; not building."
+    exit 0
 fi
 
 cmake -S "$ROOT" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE="$TYPE"

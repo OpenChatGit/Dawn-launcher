@@ -15,6 +15,7 @@
 #include <windows.h>
 #include <tlhelp32.h>
 #else
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -1161,7 +1162,61 @@ destiny2_running(void)
         g_d2_running = found;
     }
 #else
-    g_d2_running = system("pidof -q destiny2.exe") == 0 || system("pidof -q destiny2") == 0;
+    {
+        DIR *proc = opendir("/proc");
+        struct dirent *ent;
+        int found = 0;
+
+        if (proc) {
+            while ((ent = readdir(proc)) != NULL) {
+                char path[64];
+                char buf[256];
+                FILE *file;
+                size_t n;
+                size_t i;
+
+                if (ent->d_name[0] < '1' || ent->d_name[0] > '9') {
+                    continue;
+                }
+                snprintf(path, sizeof(path), "/proc/%s/comm", ent->d_name);
+                file = fopen(path, "r");
+                if (file) {
+                    if (fgets(buf, sizeof(buf), file)) {
+                        n = strlen(buf);
+                        while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) {
+                            buf[--n] = '\0';
+                        }
+                        if (os_stricmp(buf, "destiny2.exe") == 0 || os_stricmp(buf, "destiny2") == 0) {
+                            found = 1;
+                        }
+                    }
+                    fclose(file);
+                }
+                if (found) {
+                    break;
+                }
+                snprintf(path, sizeof(path), "/proc/%s/cmdline", ent->d_name);
+                file = fopen(path, "r");
+                if (!file) {
+                    continue;
+                }
+                n = fread(buf, 1, sizeof(buf) - 1, file);
+                fclose(file);
+                buf[n] = '\0';
+                for (i = 0; i < n; i++) {
+                    if (buf[i] == '\0') {
+                        buf[i] = ' ';
+                    }
+                }
+                if (contains_ci(buf, "destiny2.exe")) {
+                    found = 1;
+                    break;
+                }
+            }
+            closedir(proc);
+        }
+        g_d2_running = found;
+    }
 #endif
     g_d2_running_ms = now;
     return g_d2_running;
@@ -1278,7 +1333,7 @@ destiny2_has_window(void)
     g_d2_window_ms = now;
     return found;
 #else
-    return 0;
+    return destiny2_running();
 #endif
 }
 
@@ -1318,6 +1373,8 @@ remove_steam_appid(const char *dir)
         os_delete_file(nested);
     }
 }
+
+static void write_launch_scripts(const char *dir);
 
 static int
 launch_game_tracked(void)
@@ -1369,11 +1426,20 @@ launch_game_tracked(void)
     }
 #else
     {
-        pid_t pid = fork();
+        char script[MAX_PATH];
+        pid_t pid;
+
+        write_launch_scripts(root);
+        if (!os_join(script, sizeof(script), root, "launch-destiny.sh") || !file_exists(script)) {
+            return 0;
+        }
+        chmod(script, 0755);
+        pid = fork();
         if (pid < 0) {
             return 0;
         }
         if (pid == 0) {
+            setpgid(0, 0);
             unsetenv("SteamAppId");
             unsetenv("SteamGameId");
             unsetenv("SteamOverlayGameId");
@@ -1381,9 +1447,11 @@ launch_game_tracked(void)
             if (root[0] && chdir(root) != 0) {
                 _exit(1);
             }
+            execl("/bin/sh", "sh", script, (char *)NULL);
             execl(exe, exe, (char *)NULL);
             _exit(127);
         }
+        setpgid(pid, pid);
         g_game_pid = pid;
     }
 #endif
@@ -2478,57 +2546,195 @@ load_install_dir(void)
     refresh_installed();
 }
 
+static void exe_dir(const char *exe, char *out, size_t max);
+
+static int
+tool_at(const char *path)
+{
+    if (!path || !path[0] || !file_exists(path)) {
+        return 0;
+    }
+    snprintf(g_tool, sizeof(g_tool), "%s", path);
+    return 1;
+}
+
 static int
 find_tool(void)
 {
-    const char *names[] = {
-        "/tools/DepotDownloader" OS_EXE_EXT,
-        "/tools/DepotDownloader/DepotDownloader" OS_EXE_EXT,
+    char path[MAX_PATH];
+    char mid[MAX_PATH];
+    char exe[MAX_PATH];
+    char local[MAX_PATH];
+    const char *rel[] = {
+        "tools/DepotDownloader" OS_EXE_EXT,
+        "tools/DepotDownloader/DepotDownloader" OS_EXE_EXT,
+#ifndef _WIN32
+        "tools/DepotDownloader/DepotDownloader.exe",
+        "tools/DepotDownloader.exe",
+#endif
         NULL
     };
     int i;
-    for (i = 0; names[i]; i++) {
-        snprintf(g_tool, sizeof(g_tool), "%s%s", g_root, names[i]);
-        if (file_exists(g_tool)) {
+
+    if (g_tool[0] && file_exists(g_tool)) {
+        return 1;
+    }
+    for (i = 0; rel[i]; i++) {
+        if (g_root[0] && os_join(path, sizeof(path), g_root, rel[i]) && tool_at(path)) {
             return 1;
         }
     }
-
 #ifdef _WIN32
-    char exe[MAX_PATH];
-    DWORD n = GetModuleFileNameA(NULL, exe, sizeof(exe));
-    if (n > 0 && n < sizeof(exe)) {
-        char *slash = strrchr(exe, '\\');
-        if (slash) {
-            char nested[MAX_PATH];
-            *slash = '\0';
-            if (os_join(g_tool, sizeof(g_tool), exe, "DepotDownloader.exe") && file_exists(g_tool)) {
-                return 1;
+    {
+        DWORD n = GetModuleFileNameA(NULL, exe, sizeof(exe));
+        if (n > 0 && n < sizeof(exe)) {
+            char *slash = strrchr(exe, '\\');
+            if (slash) {
+                *slash = '\0';
+                if (os_join(path, sizeof(path), exe, "DepotDownloader.exe") && tool_at(path)) {
+                    return 1;
+                }
+                if (os_join(mid, sizeof(mid), exe, "tools") &&
+                    os_join(path, sizeof(path), mid, "DepotDownloader.exe") &&
+                    tool_at(path)) {
+                    return 1;
+                }
             }
-            if (os_join(nested, sizeof(nested), exe, "tools") &&
-                os_join(g_tool, sizeof(g_tool), nested, "DepotDownloader.exe") &&
-                file_exists(g_tool)) {
-                return 1;
-            }
+        }
+    }
+#else
+    if (os_exe_dir(exe, sizeof(exe))) {
+        if (os_join(path, sizeof(path), exe, "DepotDownloader") && tool_at(path)) {
+            return 1;
+        }
+        if (os_join(path, sizeof(path), exe, "DepotDownloader.exe") && tool_at(path)) {
+            return 1;
+        }
+        if (os_join(mid, sizeof(mid), exe, "tools") &&
+            os_join(path, sizeof(path), mid, "DepotDownloader.exe") &&
+            tool_at(path)) {
+            return 1;
+        }
+        if (os_join(mid, sizeof(mid), exe, "tools") &&
+            os_join(path, sizeof(path), mid, "DepotDownloader") &&
+            os_join(mid, sizeof(mid), path, "DepotDownloader.exe") &&
+            tool_at(mid)) {
+            return 1;
         }
     }
 #endif
-
-    char local[MAX_PATH];
     os_data_dir(local, sizeof(local));
-    os_join(g_tool, sizeof(g_tool), local, "DepotDownloader");
-    {
-        char exe[MAX_PATH];
-        os_join(exe, sizeof(exe), g_tool, "DepotDownloader" OS_EXE_EXT);
-        if (file_exists(exe)) {
-            snprintf(g_tool, sizeof(g_tool), "%s", exe);
+    if (os_join(mid, sizeof(mid), local, "DepotDownloader")) {
+        if (os_join(path, sizeof(path), mid, "DepotDownloader" OS_EXE_EXT) && tool_at(path)) {
             return 1;
         }
+#ifndef _WIN32
+        if (os_join(path, sizeof(path), mid, "DepotDownloader.exe") && tool_at(path)) {
+            return 1;
+        }
+#endif
     }
-
     g_tool[0] = '\0';
     return 0;
 }
+
+#ifndef _WIN32
+static int
+cmd_on_path(const char *name)
+{
+    char line[256];
+
+    if (!name || !name[0]) {
+        return 0;
+    }
+    snprintf(line, sizeof(line), "command -v %s >/dev/null 2>&1", name);
+    return system(line) == 0;
+}
+#endif
+
+static int
+format_tool_cmd(char *out, size_t max)
+{
+    size_t n;
+
+    if (!out || max < 8 || !g_tool[0]) {
+        return 0;
+    }
+#ifdef _WIN32
+    snprintf(out, max, "\"%s\"", g_tool);
+    return 1;
+#else
+    n = strlen(g_tool);
+    if (n > 4 && os_stricmp(g_tool + n - 4, ".exe") == 0) {
+        char dir[MAX_PATH];
+        char dll[MAX_PATH];
+
+        exe_dir(g_tool, dir, sizeof(dir));
+        if (os_join(dll, sizeof(dll), dir, "DepotDownloader.dll") &&
+            file_exists(dll) &&
+            cmd_on_path("dotnet")) {
+            snprintf(out, max, "dotnet \"%s\"", dll);
+            return 1;
+        }
+        if (cmd_on_path("wine64")) {
+            snprintf(out, max, "wine64 \"%s\"", g_tool);
+            return 1;
+        }
+        snprintf(out, max, "wine \"%s\"", g_tool);
+        return 1;
+    }
+    snprintf(out, max, "\"%s\"", g_tool);
+    return 1;
+#endif
+}
+
+#ifndef _WIN32
+static void
+sh_single_quote(const char *in, char *out, size_t max)
+{
+    size_t n = 0;
+
+    if (!in || !out || max < 3) {
+        if (out && max) {
+            out[0] = '\0';
+        }
+        return;
+    }
+    out[n++] = '\'';
+    for (; *in && n + 5 < max; in++) {
+        if (*in == '\'') {
+            out[n++] = '\'';
+            out[n++] = '\\';
+            out[n++] = '\'';
+            out[n++] = '\'';
+        } else {
+            out[n++] = *in;
+        }
+    }
+    out[n++] = '\'';
+    out[n] = '\0';
+}
+
+static void
+append_dd_password(char *cmd, size_t max)
+{
+    char quoted[512];
+    size_t used;
+
+    if (!cmd || max < 16 || !g_secret[0]) {
+        return;
+    }
+    if (strstr(cmd, " -password ")) {
+        return;
+    }
+    sh_single_quote(g_secret, quoted, sizeof(quoted));
+    used = strlen(cmd);
+    if (used + strlen(quoted) + 16 >= max) {
+        return;
+    }
+    snprintf(cmd + used, max - used, " -password %s", quoted);
+}
+#endif
 
 static int
 send_secret(void)
@@ -2997,12 +3203,17 @@ start_steam_session(void)
         fputs("dawn-steam-login-only\n", file);
         fclose(file);
     }
+    {
+        char tool[MAX_PATH + 64];
+        if (!format_tool_cmd(tool, sizeof(tool))) {
+            return 0;
+        }
     snprintf(
         command,
         sizeof(command),
-        "\"%s\" -app %s -depot %s -manifest %s -dir \"%s\" -filelist \"%s\" -username \"%s\" "
+        "%s -app %s -depot %s -manifest %s -dir \"%s\" -filelist \"%s\" -username \"%s\" "
         "-remember-password -os windows -osarch 64",
-        g_tool,
+        tool,
         INSTALL_APP,
         INSTALL_DEPOT_CONTENT,
         INSTALL_MANIFEST_CONTENT,
@@ -3010,6 +3221,7 @@ start_steam_session(void)
         list,
         g_user
     );
+    }
     g_session_job = 1;
     g_session_tried = 1;
     if (!start_child(command, work, 0, "Steam login failed")) {
@@ -3081,15 +3293,21 @@ start_depot(void)
         fail_job("No Steam username");
         return 0;
     }
+    {
+        char tool[MAX_PATH + 64];
+        if (!format_tool_cmd(tool, sizeof(tool))) {
+            fail_job("DepotDownloader missing");
+            return 0;
+        }
 
     if (g_filelist[0] && file_exists(g_filelist)) {
         snprintf(
             command,
             sizeof(command),
-            "\"%s\" -app %s -depot %s -manifest %s -dir \"%s\" -filelist \"%s\" "
+            "%s -app %s -depot %s -manifest %s -dir \"%s\" -filelist \"%s\" "
             "-username \"%s\" -remember-password -os windows -osarch 64 "
             "-max-servers 32 -max-downloads 32",
-            g_tool,
+            tool,
             INSTALL_APP,
             INSTALL_DEPOT_CONTENT,
             INSTALL_MANIFEST_CONTENT,
@@ -3101,10 +3319,10 @@ start_depot(void)
         snprintf(
             command,
             sizeof(command),
-            "\"%s\" -app %s -depot %s -manifest %s -dir \"%s\" -username \"%s\" "
+            "%s -app %s -depot %s -manifest %s -dir \"%s\" -username \"%s\" "
             "-remember-password -os windows -osarch 64 "
             "%s-max-servers 32 -max-downloads 32",
-            g_tool,
+            tool,
             INSTALL_APP,
             lang_depot(),
             lang_manifest(),
@@ -3116,10 +3334,10 @@ start_depot(void)
         snprintf(
             command,
             sizeof(command),
-            "\"%s\" -app %s -depot %s %s -manifest %s %s -dir \"%s\" -username \"%s\" "
+            "%s -app %s -depot %s %s -manifest %s %s -dir \"%s\" -username \"%s\" "
             "-remember-password -os windows -osarch 64 "
             "%s-max-servers 32 -max-downloads 32",
-            g_tool,
+            tool,
             INSTALL_APP,
             INSTALL_DEPOT_CONTENT,
             lang_depot(),
@@ -3130,6 +3348,10 @@ start_depot(void)
             g_verify ? "-validate " : ""
         );
     }
+    }
+#ifndef _WIN32
+    append_dd_password(command, sizeof(command));
+#endif
 
     depot_work_dir(work, MAX_PATH);
     set_work_status();
@@ -3875,7 +4097,7 @@ write_launch_scripts(const char *dir)
         }
     }
 #else
-    if (os_join(path, sizeof(path), dir, "launch-destiny.sh") && !file_exists(path)) {
+    if (os_join(path, sizeof(path), dir, "launch-destiny.sh")) {
         file = fopen(path, "wb");
         if (file) {
             fputs(
@@ -3884,26 +4106,32 @@ write_launch_scripts(const char *dir)
                 "GAME_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n"
                 "cd \"$GAME_DIR\"\n"
                 "export DAWN_FOREST_BASELINE=1\n"
+                "unset SteamAppId SteamGameId SteamOverlayGameId\n"
                 "if command -v steam-run >/dev/null 2>&1; then RUNNER=steam-run; else RUNNER=; fi\n"
-                "for cand in \\\n"
-                "  \"$HOME/.local/share/Steam/steamapps/common/Proton - Experimental/proton\" \\\n"
-                "  \"$HOME/.local/share/Steam/steamapps/common/Proton 9.0/proton\" \\\n"
-                "  \"$HOME/.local/share/Steam/steamapps/common/Proton 8.0/proton\" \\\n"
-                "  \"$HOME/.steam/steam/steamapps/common/Proton - Experimental/proton\" \\\n"
-                "  \"$HOME/.steam/steam/steamapps/common/Proton 9.0/proton\" \\\n"
-                "  \"$HOME/.steam/steam/steamapps/common/Proton 8.0/proton\" \\\n"
-                "  \"$HOME/.steam/root/steamapps/common/Proton - Experimental/proton\" \\\n"
-                "  \"$HOME/.steam/root/steamapps/common/Proton 9.0/proton\" \\\n"
-                "  \"$HOME/.steam/root/steamapps/common/Proton 8.0/proton\"; do\n"
-                "  if [ -f \"$cand\" ]; then\n"
-                "    STEAM_ROOT=\"$(dirname \"$(dirname \"$(dirname \"$(dirname \"$cand\")\")\")\")\"\n"
-                "    export STEAM_COMPAT_CLIENT_INSTALL_PATH=\"$STEAM_ROOT\"\n"
-                "    export STEAM_COMPAT_DATA_PATH=\"$STEAM_ROOT/steamapps/compatdata/1085660\"\n"
-                "    mkdir -p \"$STEAM_COMPAT_DATA_PATH\"\n"
-                "    if [ -n \"$RUNNER\" ]; then exec $RUNNER \"$cand\" run \"$GAME_DIR/destiny2.exe\" \"$@\"; fi\n"
-                "    exec \"$cand\" run \"$GAME_DIR/destiny2.exe\" \"$@\"\n"
-                "  fi\n"
+                "for root in \\\n"
+                "  \"$HOME/.local/share/Steam\" \\\n"
+                "  \"$HOME/.steam/steam\" \\\n"
+                "  \"$HOME/.steam/root\" \\\n"
+                "  \"$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam\"; do\n"
+                "  [ -d \"$root/steamapps/common\" ] || continue\n"
+                "  for cand in \\\n"
+                "    \"$root/steamapps/common/Proton - Experimental/proton\" \\\n"
+                "    \"$root/steamapps/common/Proton 10.0/proton\" \\\n"
+                "    \"$root/steamapps/common/Proton 9.0/proton\" \\\n"
+                "    \"$root/steamapps/common/Proton 8.0/proton\"; do\n"
+                "    if [ -f \"$cand\" ]; then\n"
+                "      export STEAM_COMPAT_CLIENT_INSTALL_PATH=\"$root\"\n"
+                "      export STEAM_COMPAT_DATA_PATH=\"$root/steamapps/compatdata/1085660\"\n"
+                "      mkdir -p \"$STEAM_COMPAT_DATA_PATH\"\n"
+                "      if [ -n \"$RUNNER\" ]; then exec $RUNNER \"$cand\" run \"$GAME_DIR/destiny2.exe\" \"$@\"; fi\n"
+                "      exec \"$cand\" run \"$GAME_DIR/destiny2.exe\" \"$@\"\n"
+                "    fi\n"
+                "  done\n"
                 "done\n"
+                "if command -v wine64 >/dev/null 2>&1; then\n"
+                "  if [ -n \"$RUNNER\" ]; then exec $RUNNER wine64 \"$GAME_DIR/destiny2.exe\" \"$@\"; fi\n"
+                "  exec wine64 \"$GAME_DIR/destiny2.exe\" \"$@\"\n"
+                "fi\n"
                 "if command -v wine >/dev/null 2>&1; then\n"
                 "  if [ -n \"$RUNNER\" ]; then exec $RUNNER wine \"$GAME_DIR/destiny2.exe\" \"$@\"; fi\n"
                 "  exec wine \"$GAME_DIR/destiny2.exe\" \"$@\"\n"
@@ -3913,6 +4141,7 @@ write_launch_scripts(const char *dir)
                 file
             );
             fclose(file);
+            chmod(path, 0755);
         }
     }
 #endif

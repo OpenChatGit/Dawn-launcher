@@ -494,7 +494,7 @@ layout(Platform *platform, InstallLayout *out, const char *label)
         inset = platform->corner_radius * 0.55f + 14.0f * dpi;
     }
     out->h = 36.0f * dpi;
-    out->pad = 14.0f * dpi;
+    out->pad = 16.0f * dpi;
     out->icon_s = 16.0f * dpi;
     if (out->icon_s > out->h * 0.48f) {
         out->icon_s = out->h * 0.48f;
@@ -503,23 +503,30 @@ layout(Platform *platform, InstallLayout *out, const char *label)
     {
         static char measure_key[32];
         static float measure_px;
-        static int measure_tw;
+        static float measure_tw;
+        wchar_t wide[32];
         const char *use = label && label[0] ? label : "Download";
-        int tw = 0;
-        int th = 0;
-        if (measure_tw > 0 && measure_px == out->text_px && strcmp(measure_key, use) == 0) {
+        float tw = 0.0f;
+        if (measure_tw > 0.0f && measure_px == out->text_px && strcmp(measure_key, use) == 0) {
             tw = measure_tw;
-        } else if (platform->measure_label) {
-            platform->measure_label(use, (int)(out->text_px + 0.5f), 600, &tw, &th, NULL);
+        } else {
+            os_utf8_to_wide(use, wide, 32);
+            tw = icon_measure_label(platform->hdc, wide, out->text_px, 600);
+            if (tw <= 0.0f && platform->measure_label) {
+                int iw = 0;
+                int ih = 0;
+                platform->measure_label(use, (int)(out->text_px + 0.5f), 600, &iw, &ih, NULL);
+                tw = (float)iw;
+            }
+            if (tw <= 0.0f) {
+                tw = (float)strlen(use) * out->text_px * 0.62f;
+            }
             snprintf(measure_key, sizeof(measure_key), "%s", use);
             measure_px = out->text_px;
             measure_tw = tw;
         }
-        if (tw <= 0) {
-            tw = (int)((float)strlen(use) * out->text_px * 0.58f + 0.5f);
-        }
-        gap = 6.0f * dpi;
-        out->main_w = out->pad + out->icon_s + gap + (float)tw + out->pad;
+        gap = 8.0f * dpi;
+        out->main_w = out->pad + out->icon_s + gap + ceilf(tw + 8.0f * dpi) + out->pad;
     }
     out->caret_w = 32.0f * dpi;
     out->w = out->main_w + out->caret_w;

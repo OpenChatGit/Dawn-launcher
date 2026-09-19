@@ -12,7 +12,7 @@ fi
 
 if [ "$KIND" = "official" ]; then
     cat > "$OUT" <<EOF
-Linux uses the same official Steam mark and Inter font files as Windows. SVGs go through LunaSVG instead of the old software fallback.
+Linux now matches Windows for Install, Play, Stop, and uninstall (Dawn only, Sunrise only, or full). The Linux build installs missing packages, draws the Steam avatar, and asks for the depot password once.
 
 WSL can build and open the Linux UI on the desktop with \`dev-wsl.ps1\` or \`build-wsl.sh --run\`.
 EOF

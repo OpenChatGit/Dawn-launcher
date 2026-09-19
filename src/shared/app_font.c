@@ -95,7 +95,7 @@ try_font(char *out, size_t max, const char *dir, const char *name)
 int
 app_font_file(char *out, size_t max, int bold)
 {
-    const char *name = bold ? "Inter-SemiBold.ttf" : "Inter-Regular.ttf";
+    const char *name = bold ? "IBMPlexSans-SemiBold.ttf" : "IBMPlexSans-Regular.ttf";
     char exe[MAX_PATH];
     char parent[MAX_PATH];
     char app[MAX_PATH];
@@ -122,16 +122,30 @@ app_font_file(char *out, size_t max, int bold)
 #ifndef _WIN32
     {
         const char *sys[] = {
-            "/usr/share/fonts/truetype/inter",
-            "/usr/share/fonts/opentype/inter",
+            "/usr/share/fonts/truetype/ibm-plex",
+            "/usr/share/fonts/opentype/ibm-plex",
+            "/usr/share/fonts/truetype/liberation",
+            "/usr/share/fonts/truetype/dejavu",
+            "/usr/share/fonts/truetype/noto",
             "/usr/local/share/fonts",
             NULL
         };
+        const char *alts[] = {
+            name,
+            bold ? "IBMPlexSans-SemiBold.ttf" : "IBMPlexSans-Regular.ttf",
+            bold ? "LiberationSans-Bold.ttf" : "LiberationSans-Regular.ttf",
+            bold ? "DejaVuSans-Bold.ttf" : "DejaVuSans.ttf",
+            bold ? "NotoSans-SemiBold.ttf" : "NotoSans-Regular.ttf",
+            NULL
+        };
         int i;
+        int j;
         for (i = 0; sys[i]; i++) {
-            snprintf(out, max, "%s/%s", sys[i], name);
-            if (os_file_exists(out)) {
-                return 1;
+            for (j = 0; alts[j]; j++) {
+                snprintf(out, max, "%s/%s", sys[i], alts[j]);
+                if (os_file_exists(out)) {
+                    return 1;
+                }
             }
         }
     }

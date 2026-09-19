@@ -1,6 +1,7 @@
 #include "theme_desc.h"
 #include "shared/api.h"
 #include "shared/draw.h"
+#include "shared/draw_vg.h"
 #include "shared/svg_rast.h"
 
 #include <math.h>
@@ -75,6 +76,7 @@ theme_render_init(void)
 extern "C" void
 theme_render_shutdown(void)
 {
+    vg_reset();
     free_base();
     free_emblem();
 }
@@ -82,6 +84,7 @@ theme_render_shutdown(void)
 extern "C" void
 theme_render_reset(void)
 {
+    vg_reset();
     free_base();
     free_emblem();
 }
@@ -141,40 +144,6 @@ pix_clear(Pix *dst, uint32_t rgb)
 }
 
 static float
-clamp01(float v)
-{
-    if (v < 0.0f) {
-        return 0.0f;
-    }
-    if (v > 1.0f) {
-        return 1.0f;
-    }
-    return v;
-}
-
-static uint32_t
-lerp_rgb(uint32_t a, uint32_t b, float t)
-{
-    int ar;
-    int ag;
-    int ab;
-    int br;
-    int bg;
-    int bb;
-
-    t = clamp01(t);
-    ar = (int)((a >> 16) & 0xff);
-    ag = (int)((a >> 8) & 0xff);
-    ab = (int)(a & 0xff);
-    br = (int)((b >> 16) & 0xff);
-    bg = (int)((b >> 8) & 0xff);
-    bb = (int)(b & 0xff);
-    return ((uint32_t)(ar + (int)((float)(br - ar) * t)) << 16) |
-        ((uint32_t)(ag + (int)((float)(bg - ag) * t)) << 8) |
-        (uint32_t)(ab + (int)((float)(bb - ab) * t));
-}
-
-static float
 design_px(const ThemeLayer *layer, int height, float dpi)
 {
     float design = 620.0f;
@@ -208,6 +177,12 @@ layer_audio_drive(const ThemeLayer *layer, float time)
     return drive;
 }
 
+static int
+bind_pix(Pix *dst)
+{
+    return dst && dst->px && vg_begin(dst->px, dst->w, dst->h);
+}
+
 static void
 fill_radial_ellipse(
     Pix *dst,
@@ -221,51 +196,10 @@ fill_radial_ellipse(
     float mid_stop
 )
 {
-    int x0;
-    int y0;
-    int x1;
-    int y1;
-    int y;
-    float mid_t;
-
-    if (!dst || rx < 1.0f || ry < 1.0f) {
+    if (!bind_pix(dst) || rx < 1.0f || ry < 1.0f) {
         return;
     }
-    mid_t = mid_stop > 0.05f && mid_stop < 0.95f ? mid_stop : 0.42f;
-    x0 = (int)floorf(cx - rx);
-    y0 = (int)floorf(cy - ry);
-    x1 = (int)ceilf(cx + rx);
-    y1 = (int)ceilf(cy + ry);
-    if (x0 < 0) {
-        x0 = 0;
-    }
-    if (y0 < 0) {
-        y0 = 0;
-    }
-    if (x1 > dst->w) {
-        x1 = dst->w;
-    }
-    if (y1 > dst->h) {
-        y1 = dst->h;
-    }
-    for (y = y0; y < y1; y++) {
-        int x;
-        float v = ((float)y + 0.5f - cy) / ry;
-        for (x = x0; x < x1; x++) {
-            float u = ((float)x + 0.5f - cx) / rx;
-            float t = sqrtf(u * u + v * v);
-            uint32_t rgb;
-            if (t > 1.0f) {
-                continue;
-            }
-            if (t <= mid_t) {
-                rgb = lerp_rgb(inner, mid, t / mid_t);
-            } else {
-                rgb = lerp_rgb(mid, outer, (t - mid_t) / (1.0f - mid_t));
-            }
-            pix_put(dst, x, y, rgb, 255);
-        }
-    }
+    vg_radial_ellipse(cx, cy, rx, ry, inner, mid, outer, mid_stop);
 }
 
 static void
@@ -291,35 +225,11 @@ draw_layer_vignette(Pix *dst, const ThemeLayer *layer, int width, int height)
     float cy = layer->y * (float)height;
     float rx = (float)width * (layer->w > 0.1f ? layer->w : 1.2f) * 0.5f;
     float ry = (float)height * (layer->h > 0.1f ? layer->h : 1.2f) * 0.5f;
-    int y;
-    int amax;
 
-    if (!dst || rx < 1.0f || ry < 1.0f) {
+    if (!bind_pix(dst) || rx < 1.0f || ry < 1.0f) {
         return;
     }
-    amax = (int)(layer->opacity * 255.0f + 0.5f);
-    if (amax <= 0) {
-        return;
-    }
-    for (y = 0; y < height; y++) {
-        int x;
-        float v = ((float)y + 0.5f - cy) / ry;
-        for (x = 0; x < width; x++) {
-            float u = ((float)x + 0.5f - cx) / rx;
-            float t = sqrtf(u * u + v * v);
-            int a;
-            if (t < 1.0f) {
-                continue;
-            }
-            a = (int)((clamp01(t - 1.0f) + 0.15f) * (float)amax);
-            if (a > amax) {
-                a = amax;
-            }
-            if (a > 0) {
-                pix_put(dst, x, y, layer->outer, a);
-            }
-        }
-    }
+    vg_vignette(cx, cy, rx, ry, width, height, layer->inner, layer->outer, layer->opacity);
 }
 
 static void
@@ -345,66 +255,6 @@ make_arc_points(const ThemeLayer *layer, float cx, float cy, float radius, float
     }
 }
 
-static float
-dist_seg(float px, float py, float x0, float y0, float x1, float y1)
-{
-    float dx = x1 - x0;
-    float dy = y1 - y0;
-    float len2 = dx * dx + dy * dy;
-    float t = 0.0f;
-    float lx;
-    float ly;
-
-    if (len2 > 1e-6f) {
-        t = ((px - x0) * dx + (py - y0) * dy) / len2;
-        if (t < 0.0f) {
-            t = 0.0f;
-        }
-        if (t > 1.0f) {
-            t = 1.0f;
-        }
-    }
-    lx = x0 + dx * t;
-    ly = y0 + dy * t;
-    return sqrtf((px - lx) * (px - lx) + (py - ly) * (py - ly));
-}
-
-static float
-dist_poly(float px, float py, const Pt *pts, int n)
-{
-    float best = 1.0e9f;
-    int i;
-
-    for (i = 0; i < n - 1; i++) {
-        float d = dist_seg(px, py, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
-        if (d < best) {
-            best = d;
-        }
-    }
-    return best;
-}
-
-static int
-point_in_poly(float x, float y, const Pt *pts, int n)
-{
-    int c = 0;
-    int i;
-    int j = n - 1;
-
-    for (i = 0; i < n; j = i++) {
-        float yi = pts[i].y;
-        float yj = pts[j].y;
-        if ((yi > y) != (yj > y)) {
-            float xi = pts[i].x;
-            float xj = pts[j].x;
-            if (x < (xj - xi) * (y - yi) / (yj - yi + 1e-8f) + xi) {
-                c = !c;
-            }
-        }
-    }
-    return c;
-}
-
 static void
 draw_layer_arc(Pix *dst, const ThemeLayer *layer, int width, int height, float time, float dpi)
 {
@@ -420,160 +270,49 @@ draw_layer_arc(Pix *dst, const ThemeLayer *layer, int width, int height, float t
     Pt cap[MAX_ARC + 1];
     float stroke_w;
     float core_w;
-    float sigma_o;
-    float sigma_i;
-    float reach;
-    float x_min;
-    float y_min;
-    float x_max;
-    float y_max;
+    int glow_a;
+    int core_a;
     int i;
-    int x0;
-    int y0;
-    int x1;
-    int y1;
-    int y;
 
-    if (!dst) {
+    if (!bind_pix(dst)) {
         return;
     }
     if (seg > 64) {
         seg = 64;
     }
     make_arc_points(layer, cx, cy, radius, anim, pts, seg);
-
     if (layer->cap) {
         cap[0].x = cx;
         cap[0].y = cy;
         for (i = 0; i <= seg; i++) {
             cap[i + 1] = pts[i];
         }
-        x_min = cx;
-        y_min = cy;
-        x_max = cx;
-        y_max = cy;
-        for (i = 0; i <= seg; i++) {
-            if (pts[i].x < x_min) {
-                x_min = pts[i].x;
-            }
-            if (pts[i].y < y_min) {
-                y_min = pts[i].y;
-            }
-            if (pts[i].x > x_max) {
-                x_max = pts[i].x;
-            }
-            if (pts[i].y > y_max) {
-                y_max = pts[i].y;
-            }
-        }
-        x0 = (int)floorf(x_min) - 1;
-        y0 = (int)floorf(y_min) - 1;
-        x1 = (int)ceilf(x_max) + 1;
-        y1 = (int)ceilf(y_max) + 1;
-        if (x0 < 0) {
-            x0 = 0;
-        }
-        if (y0 < 0) {
-            y0 = 0;
-        }
-        if (x1 > dst->w) {
-            x1 = dst->w;
-        }
-        if (y1 > dst->h) {
-            y1 = dst->h;
-        }
-        for (y = y0; y < y1; y++) {
-            int x;
-            for (x = x0; x < x1; x++) {
-                float pxp = (float)x + 0.5f;
-                float pyp = (float)y + 0.5f;
-                float t;
-                if (!point_in_poly(pxp, pyp, cap, seg + 2)) {
-                    continue;
-                }
-                t = sqrtf((pxp - cx) * (pxp - cx) + (pyp - cy) * (pyp - cy)) / (radius * 1.15f);
-                pix_put(dst, x, y, lerp_rgb(layer->cap_inner, layer->cap_outer, t), 255);
-            }
-        }
+        vg_fill_poly_radial(
+            (const VgPt *)cap,
+            seg + 2,
+            cx,
+            cy,
+            radius * 1.15f,
+            layer->cap_inner,
+            layer->cap_outer
+        );
     }
-
     stroke_w = layer->stroke_width * px;
     core_w = layer->core_width * px;
-    sigma_o = layer->blur_outer * px * 0.85f;
-    sigma_i = layer->blur_inner * px * 0.70f;
-    if (sigma_o < 1.0f) {
-        sigma_o = 1.0f;
-    }
-    if (sigma_i < 0.6f) {
-        sigma_i = 0.6f;
-    }
-    reach = sigma_o * 3.2f + stroke_w;
-    x_min = pts[0].x;
-    y_min = pts[0].y;
-    x_max = pts[0].x;
-    y_max = pts[0].y;
-    for (i = 1; i <= seg; i++) {
-        if (pts[i].x < x_min) {
-            x_min = pts[i].x;
-        }
-        if (pts[i].y < y_min) {
-            y_min = pts[i].y;
-        }
-        if (pts[i].x > x_max) {
-            x_max = pts[i].x;
-        }
-        if (pts[i].y > y_max) {
-            y_max = pts[i].y;
-        }
-    }
-    x0 = (int)floorf(x_min - reach);
-    y0 = (int)floorf(y_min - reach);
-    x1 = (int)ceilf(x_max + reach);
-    y1 = (int)ceilf(y_max + reach);
-    if (x0 < 0) {
-        x0 = 0;
-    }
-    if (y0 < 0) {
-        y0 = 0;
-    }
-    if (x1 > dst->w) {
-        x1 = dst->w;
-    }
-    if (y1 > dst->h) {
-        y1 = dst->h;
-    }
-
-    for (y = y0; y < y1; y++) {
-        int x;
-        for (x = x0; x < x1; x++) {
-            float pxp = (float)x + 0.5f;
-            float pyp = (float)y + 0.5f;
-            float d = dist_poly(pxp, pyp, pts, seg + 1);
-            float ao;
-            float ai;
-            float as;
-            float ac;
-            if (d > reach) {
-                continue;
-            }
-            ao = expf(-(d * d) / (2.0f * sigma_o * sigma_o)) * layer->stroke_alpha * layer->opacity * 0.55f;
-            ai = expf(-(d * d) / (2.0f * sigma_i * sigma_i)) * layer->stroke_alpha * layer->opacity * 0.80f;
-            as = clamp01(stroke_w * 0.5f + 0.55f - d) * layer->stroke_alpha * layer->opacity;
-            ac = clamp01(core_w * 0.5f + 0.55f - d) * layer->opacity;
-            if (ao > 0.002f) {
-                pix_put(dst, x, y, layer->glow, (int)(ao * 255.0f + 0.5f));
-            }
-            if (ai > 0.002f) {
-                pix_put(dst, x, y, layer->glow, (int)(ai * 255.0f + 0.5f));
-            }
-            if (as > 0.002f) {
-                pix_put(dst, x, y, layer->glow, (int)(as * 255.0f + 0.5f));
-            }
-            if (ac > 0.002f && layer->core) {
-                pix_put(dst, x, y, layer->core, (int)(ac * 255.0f + 0.5f));
-            }
-        }
-    }
+    glow_a = (int)(layer->stroke_alpha * layer->opacity * 255.0f + 0.5f);
+    core_a = (int)(layer->opacity * 255.0f + 0.5f);
+    vg_glow_poly(
+        (const VgPt *)pts,
+        seg + 1,
+        stroke_w,
+        layer->blur_outer * px,
+        layer->blur_inner * px,
+        layer->glow,
+        glow_a,
+        layer->core,
+        core_a,
+        core_w
+    );
 }
 
 static void
@@ -722,6 +461,111 @@ draw_layer_emblem(Pix *dst, const ThemeLayer *layer, int width, int height, floa
     }
 }
 
+static float
+wrap01(float t)
+{
+    t -= floorf(t);
+    if (t < 0.0f) {
+        t += 1.0f;
+    }
+    return t;
+}
+
+static void
+blit_emblem(Pix *dst, const ThemeLayer *layer, float left, float top, float size, int opacity)
+{
+    int x0;
+    int y0;
+    int x1;
+    int y1;
+    int y;
+
+    if (!dst || size < 4.0f || opacity <= 0 || !g_emblem.rgba) {
+        return;
+    }
+    x0 = (int)floorf(left);
+    y0 = (int)floorf(top);
+    x1 = (int)ceilf(left + size);
+    y1 = (int)ceilf(top + size);
+    if (x0 < 0) {
+        x0 = 0;
+    }
+    if (y0 < 0) {
+        y0 = 0;
+    }
+    if (x1 > dst->w) {
+        x1 = dst->w;
+    }
+    if (y1 > dst->h) {
+        y1 = dst->h;
+    }
+    for (y = y0; y < y1; y++) {
+        int x;
+        float v = ((float)y + 0.5f - top) / size;
+        if (v < 0.0f || v > 1.0f) {
+            continue;
+        }
+        for (x = x0; x < x1; x++) {
+            float u = ((float)x + 0.5f - left) / size;
+            int cover;
+            int a;
+            if (u < 0.0f || u > 1.0f) {
+                continue;
+            }
+            cover = sample_emblem(u, v);
+            if (cover <= 0) {
+                continue;
+            }
+            a = (cover * opacity) / 255;
+            if (a > 0) {
+                pix_put(dst, x, y, layer->color, a);
+            }
+        }
+    }
+}
+
+static void
+draw_layer_drift(Pix *dst, const ThemeLayer *layer, int width, int height, float dpi, float time)
+{
+    int count;
+    float speed;
+    float design = 620.0f;
+    float base;
+    int i;
+
+    ensure_emblem(layer);
+    if (!g_emblem.rgba || g_emblem.dim <= 0) {
+        return;
+    }
+    count = layer->count > 0 ? layer->count : 12;
+    if (count > 24) {
+        count = 24;
+    }
+    speed = layer->flow_speed > 0.01f ? layer->flow_speed : 0.07f;
+    base = layer->size * ((float)height / design);
+    if (dpi > 1.0f && base < layer->size * dpi * 0.35f) {
+        base = layer->size * dpi * 0.55f;
+    }
+    if (base < 18.0f) {
+        base = 18.0f;
+    }
+    for (i = 0; i < count; i++) {
+        float seed = (float)i * 0.618033988f + layer->phase;
+        float t = wrap01(time * speed + seed);
+        float lane = wrap01(seed * 3.17f) * 2.0f - 1.0f;
+        float nx = -0.2f + t * 1.4f + lane * 0.4f;
+        float ny = -0.2f + t * 1.4f - lane * 0.22f;
+        float sz = base;
+        int opacity;
+        if (layer->animate) {
+            nx += 0.03f * sinf(time * 0.45f + seed * 6.2f);
+            ny += 0.025f * cosf(time * 0.38f + seed * 5.1f);
+        }
+        opacity = (int)(layer->opacity * 255.0f + 0.5f);
+        blit_emblem(dst, layer, nx * (float)width - sz * 0.5f, ny * (float)height - sz * 0.5f, sz, opacity);
+    }
+}
+
 static void
 draw_layer_ring(Pix *dst, const ThemeLayer *layer, int width, int height, float dpi, float time)
 {
@@ -736,12 +580,14 @@ draw_layer_ring(Pix *dst, const ThemeLayer *layer, int width, int height, float 
     float stroke;
     float glow_w;
     float alpha;
-    int x0;
-    int y0;
-    int x1;
-    int y1;
-    int y;
+    uint32_t glow;
+    uint32_t core;
+    int glow_a;
+    int core_a;
 
+    if (!bind_pix(dst)) {
+        return;
+    }
     if (amp > 0.6f) {
         amp = 0.16f;
     }
@@ -760,38 +606,16 @@ draw_layer_ring(Pix *dst, const ThemeLayer *layer, int width, int height, float 
     if (alpha > 1.0f) {
         alpha = 1.0f;
     }
-    x0 = (int)floorf(cx - rx - glow_w * 3.0f);
-    y0 = (int)floorf(cy - ry - glow_w * 3.0f);
-    x1 = (int)ceilf(cx + rx + glow_w * 3.0f);
-    y1 = (int)ceilf(cy + ry + glow_w * 3.0f);
-    if (x0 < 0) {
-        x0 = 0;
+    glow = layer->glow ? layer->glow : layer->color;
+    core = layer->core ? layer->core : layer->color;
+    glow_a = (int)(layer->stroke_alpha * alpha * 255.0f + 0.5f);
+    core_a = (int)(alpha * 255.0f + 0.5f);
+    if (glow_a > 0 && glow_w > 0.2f) {
+        vg_ellipse_stroke(cx, cy, rx, ry, glow_w + layer->blur_outer * px, glow, (glow_a * 55) / 255);
+        vg_ellipse_stroke(cx, cy, rx, ry, glow_w, glow, glow_a);
     }
-    if (y0 < 0) {
-        y0 = 0;
-    }
-    if (x1 > dst->w) {
-        x1 = dst->w;
-    }
-    if (y1 > dst->h) {
-        y1 = dst->h;
-    }
-    for (y = y0; y < y1; y++) {
-        int x;
-        for (x = x0; x < x1; x++) {
-            float u = ((float)x + 0.5f - cx) / rx;
-            float v = ((float)y + 0.5f - cy) / ry;
-            float d = (sqrtf(u * u + v * v) - 1.0f) * ((rx + ry) * 0.5f);
-            float ad = fabsf(d);
-            float ag = clamp01(glow_w * 0.5f + 1.2f - ad) * layer->stroke_alpha * alpha * 0.55f;
-            float ac = clamp01(stroke * 0.5f + 0.55f - ad) * alpha;
-            if (ag > 0.002f) {
-                pix_put(dst, x, y, layer->glow ? layer->glow : layer->color, (int)(ag * 255.0f + 0.5f));
-            }
-            if (ac > 0.002f) {
-                pix_put(dst, x, y, layer->core ? layer->core : layer->color, (int)(ac * 255.0f + 0.5f));
-            }
-        }
+    if (core_a > 0 && stroke > 0.2f) {
+        vg_ellipse_stroke(cx, cy, rx, ry, stroke, core, core_a);
     }
 }
 
@@ -822,6 +646,9 @@ draw_live_layer(Pix *dst, const ThemeLayer *layer, int width, int height, float 
         break;
     case THEME_LAYER_RING:
         draw_layer_ring(dst, layer, width, height, dpi, time);
+        break;
+    case THEME_LAYER_DRIFT:
+        draw_layer_drift(dst, layer, width, height, dpi, time);
         break;
     default:
         break;
