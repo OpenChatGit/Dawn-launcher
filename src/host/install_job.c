@@ -1,4 +1,5 @@
 #include "install_job.h"
+#include "config.h"
 #include "steam_auth.h"
 #include "shared/os.h"
 
@@ -123,6 +124,8 @@ static int g_session_tried;
 static int g_user_start;
 static int g_setup_creds;
 static int g_cancel;
+static int g_paused;
+static int g_sim;
 static int g_lang_only;
 static int g_launch_after;
 static int g_dawn_next;
@@ -265,6 +268,7 @@ status_holds(const char *text)
          strcmp(text, "Won't delete Steam install") == 0 ||
          strcmp(text, "No game files here") == 0 ||
          strcmp(text, "Cancelled") == 0 ||
+         strcmp(text, "Paused") == 0 ||
          strcmp(text, "Stopped") == 0 ||
          strcmp(text, "Running") == 0 ||
          strcmp(text, "Files verified") == 0 ||
@@ -285,7 +289,7 @@ expire_hold_status(void)
 {
     uint32_t now;
 
-    if (g_busy || g_dawn_next != DAWN_WORK_NONE || g_remove_next || !status_holds(g_status)) {
+    if (g_paused || g_busy || g_dawn_next != DAWN_WORK_NONE || g_remove_next || !status_holds(g_status)) {
         return;
     }
     now = os_tick_ms();
@@ -459,6 +463,8 @@ fail_job(const char *text)
 {
     close_child();
     g_busy = 0;
+    g_paused = 0;
+    g_sim = 0;
     g_dawn_next = DAWN_WORK_NONE;
     g_verify = 0;
     g_need = INSTALL_NEED_NONE;
@@ -4434,6 +4440,8 @@ install_job_init(const char *project_root)
     g_session_tried = 0;
     g_user_start = 0;
     g_cancel = 0;
+    g_paused = 0;
+    g_sim = 0;
     g_lang_only = 0;
     g_launch_after = 0;
     g_dawn_next = DAWN_WORK_NONE;
@@ -4604,9 +4612,103 @@ install_job_submit_secret(const char *text)
     }
 }
 
+static int
+is_dev_host(void)
+{
+    char path[MAX_PATH];
+    const char *base;
+
+    if (APP_VERSION && strstr(APP_VERSION, "dev")) {
+        return 1;
+    }
+#ifdef _WIN32
+    if (GetModuleFileNameA(NULL, path, MAX_PATH)) {
+        int i;
+        base = path;
+        for (i = 0; path[i]; i++) {
+            if (path[i] == '\\' || path[i] == '/') {
+                base = path + i + 1;
+            }
+        }
+        if (os_stricmp(base, "host.exe") == 0) {
+            return 1;
+        }
+    }
+#else
+    {
+        ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 1);
+        if (n > 0) {
+            path[n] = '\0';
+            base = strrchr(path, '/');
+            base = base ? base + 1 : path;
+            if (os_stricmp(base, "host") == 0) {
+                return 1;
+            }
+        }
+    }
+#endif
+    return 0;
+}
+
+static void
+start_sim(void)
+{
+    g_sim = 1;
+    g_paused = 0;
+    g_cancel = 0;
+    g_busy = 1;
+    g_session_job = 0;
+    g_verify = 0;
+    g_user_start = 1;
+    g_step = STEP_DEPOT_CONTENT;
+    g_phase = INSTALL_RUNNING;
+    g_need = INSTALL_NEED_NONE;
+    if (g_depot_progress < 0.08f) {
+        g_depot_progress = 0.14f;
+    }
+    set_status("Downloading game");
+}
+
+static void
+poll_sim(void)
+{
+    static uint32_t last;
+    static int last_pct = -1;
+    uint32_t now;
+    float dt;
+    int pct;
+
+    if (!g_sim || g_paused || !g_busy) {
+        last = 0;
+        return;
+    }
+    now = os_tick_ms();
+    dt = last ? (float)(now - last) / 1000.0f : 0.04f;
+    last = now;
+    if (dt < 0.0f) {
+        dt = 0.0f;
+    }
+    if (dt > 0.2f) {
+        dt = 0.2f;
+    }
+    g_depot_progress += dt * 0.055f;
+    if (g_depot_progress > 0.86f) {
+        g_depot_progress = 0.16f;
+    }
+    pct = (int)(g_depot_progress * 100.0f + 0.5f);
+    if (pct != last_pct) {
+        last_pct = pct;
+        set_status("Downloading game");
+    }
+}
+
 int
 install_job_start(void)
 {
+    if (g_paused) {
+        install_job_pause();
+        return 1;
+    }
     if (g_busy) {
         return 0;
     }
@@ -4696,13 +4798,15 @@ install_job_cancel(void)
     if (g_remove_next) {
         return;
     }
-    if (!g_busy && g_phase != INSTALL_RUNNING && g_need == INSTALL_NEED_NONE) {
+    if (!g_busy && !g_paused && g_phase != INSTALL_RUNNING && g_need == INSTALL_NEED_NONE) {
         return;
     }
     g_cancel = 1;
     stop_child_tree();
     close_child();
     g_busy = 0;
+    g_paused = 0;
+    g_sim = 0;
     g_session_job = 0;
     g_user_start = 0;
     g_setup_creds = 0;
@@ -4719,11 +4823,101 @@ install_job_cancel(void)
     forget_depot_password();
 }
 
+int
+install_job_can_pause(void)
+{
+    if (g_remove_next || g_dawn_next != DAWN_WORK_NONE) {
+        return 0;
+    }
+    if (g_session_job) {
+        return 0;
+    }
+    if (g_paused || g_sim) {
+        return 1;
+    }
+    return g_busy && g_step == STEP_DEPOT_CONTENT;
+}
+
+int
+install_job_paused(void)
+{
+    return g_paused;
+}
+
+void
+install_job_pause(void)
+{
+    if (g_paused) {
+        g_paused = 0;
+        g_cancel = 0;
+        g_phase = INSTALL_RUNNING;
+        g_user_start = 1;
+        if (g_sim) {
+            g_busy = 1;
+            set_status("Downloading game");
+            return;
+        }
+        {
+            float keep = g_depot_progress;
+            if (!find_tool()) {
+                fail_job("DepotDownloader missing");
+                return;
+            }
+            if (!start_depot()) {
+                return;
+            }
+            if (keep > g_depot_progress) {
+                g_depot_progress = keep;
+            }
+        }
+        return;
+    }
+    if (!install_job_can_pause()) {
+        return;
+    }
+    g_paused = 1;
+    g_cancel = 1;
+    if (!g_sim) {
+        stop_child_tree();
+        close_child();
+    }
+    g_busy = 0;
+    g_cancel = 0;
+    g_phase = INSTALL_RUNNING;
+    set_status("Paused");
+}
+
+int
+install_job_can_simulate(void)
+{
+    if (!is_dev_host()) {
+        return 0;
+    }
+    if (g_busy || g_paused || g_dawn_next != DAWN_WORK_NONE || g_remove_next) {
+        return 0;
+    }
+    return 1;
+}
+
+void
+install_job_simulate(void)
+{
+    if (!install_job_can_simulate()) {
+        return;
+    }
+    close_child();
+    start_sim();
+}
+
 void
 install_job_poll(void)
 {
     poll_game();
     expire_hold_status();
+    if (g_sim) {
+        poll_sim();
+        return;
+    }
     if (g_remove_next) {
         apply_remove();
         return;
@@ -4768,6 +4962,8 @@ install_job_poll(void)
         maybe_prepare_session();
         if (g_phase == INSTALL_RUNNING &&
             g_user_start &&
+            !g_paused &&
+            !g_sim &&
             !g_dawn_next &&
             !g_remove_next &&
             !g_verify &&
@@ -4842,7 +5038,7 @@ install_job_poll(void)
 int
 install_job_busy(void)
 {
-    return g_busy || g_dawn_next != DAWN_WORK_NONE || g_remove_next != REMOVE_NONE;
+    return g_busy || g_paused || g_dawn_next != DAWN_WORK_NONE || g_remove_next != REMOVE_NONE;
 }
 
 int

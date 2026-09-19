@@ -3,7 +3,7 @@
 
 #include "shared/types.h"
 
-#define APP_API_VERSION 26
+#define APP_API_VERSION 27
 #ifndef INSTALL_PART_DEPOTS
 #define INSTALL_PART_DEPOTS 1
 #define INSTALL_PART_DAWN 2
@@ -83,6 +83,11 @@ typedef struct Platform {
     void (*install_submit_secret)(const char *text);
     int (*install_start)(void);
     void (*install_cancel)(void);
+    void (*install_pause)(void);
+    int (*install_paused)(void);
+    int (*install_can_pause)(void);
+    int (*install_can_simulate)(void);
+    void (*install_simulate)(void);
     int (*install_busy)(void);
     int (*install_need)(void);
     float (*install_progress)(void);

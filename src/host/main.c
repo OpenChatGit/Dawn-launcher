@@ -9,6 +9,7 @@
 #include "media.h"
 #include "window.h"
 #include "shared/os.h"
+#include "shared/user_id.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -96,6 +97,7 @@ main(void)
     install_job_init(g_app_root);
     self_update_init();
     steam_auth_init(g_app_root);
+    user_id_get();
 
     static AppMemory memory;
     if (!hot_reload_init(&memory)) {

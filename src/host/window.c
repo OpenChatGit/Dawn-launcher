@@ -1046,6 +1046,11 @@ window_bind_platform(HostWindow *window, Platform *platform, const char *project
     platform->install_submit_secret = install_job_submit_secret;
     platform->install_start = install_job_start;
     platform->install_cancel = install_job_cancel;
+    platform->install_pause = install_job_pause;
+    platform->install_paused = install_job_paused;
+    platform->install_can_pause = install_job_can_pause;
+    platform->install_can_simulate = install_job_can_simulate;
+    platform->install_simulate = install_job_simulate;
     platform->install_busy = install_job_busy;
     platform->install_need = install_job_need;
     platform->install_progress = install_job_progress;

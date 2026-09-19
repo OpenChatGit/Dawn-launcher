@@ -38,6 +38,7 @@ set(APP_LOGIC_SRC
     src/modules/theme/theme_json.c
     src/modules/theme/theme_ui.c
     src/shared/os.c
+    src/shared/user_id.c
 )
 
 set(HOST_SRC
@@ -50,6 +51,7 @@ set(HOST_SRC
     src/host/self_update.c
     src/host/steam_auth.cpp
     src/shared/os.c
+    src/shared/user_id.c
 )
 
 if(WIN32)
@@ -67,12 +69,14 @@ else()
     list(APPEND APP_LOGIC_SRC
         src/modules/icons/icons_soft.cpp
         src/modules/theme/theme_render_soft.cpp
+        src/shared/soft_font.c
     )
     list(APPEND HOST_SRC
         src/host/window_linux.c
         src/host/media_linux.c
         src/host/ytstream_linux.c
         src/host/video_bg_linux.c
+        src/shared/soft_font.c
     )
 endif()
 

@@ -1,6 +1,7 @@
 #include "shared/icons.h"
 #include "shared/draw.h"
 #include "shared/os.h"
+#include "shared/soft_font.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -301,6 +302,10 @@ icon_draw(void *hdc, IconId id, float cx, float cy, float size, uint32_t rgb, fl
         stroke_line(dc, cx + h * 0.75f, cy, cx - h * 0.45f, cy + h, s, rgb, a);
         stroke_line(dc, cx - h * 0.45f, cy + h, cx - h * 0.45f, cy - h, s, rgb, a);
         break;
+    case ICON_PAUSE:
+        icon_round_rect(hdc, cx - h * 0.55f, cy - h, h * 0.38f, h * 2.0f, h * 0.08f, rgb, a);
+        icon_round_rect(hdc, cx + h * 0.17f, cy - h, h * 0.38f, h * 2.0f, h * 0.08f, rgb, a);
+        break;
     case ICON_CHEVRON_UP:
         stroke_line(dc, cx - h * 0.9f, cy + h * 0.4f, cx, cy - h * 0.4f, s, rgb, a);
         stroke_line(dc, cx + h * 0.9f, cy + h * 0.4f, cx, cy - h * 0.4f, s, rgb, a);
@@ -318,46 +323,23 @@ icon_draw(void *hdc, IconId id, float cx, float cy, float size, uint32_t rgb, fl
 static void
 draw_char(SoftDc *dc, int x, int y, int scale, wchar_t ch, uint32_t rgb, int alpha)
 {
-    /* 5x7 subset for launcher labels */
-    static const unsigned char font[96][7] = {
-        {0,0,0,0,0,0,0},
-    };
-    (void)font;
-    if (ch < 32 || ch > 126) {
-        ch = '?';
+    int row;
+    int col;
+
+    if (scale < 1) {
+        scale = 1;
     }
-    /* tiny procedural glyphs */
-    int col = (int)(ch - 32);
-    unsigned pattern = (unsigned)(col * 17u + 13u);
-    for (int row = 0; row < 7; ++row) {
-        unsigned bits = (pattern + (unsigned)row * 3u) & 0x1f;
-        if (ch == ' ') {
-            bits = 0;
-        }
-        for (int c = 0; c < 5; ++c) {
-            int on = 0;
-            if (ch >= 'A' && ch <= 'Z') {
-                on = ((row == 0 || row == 3) && c < 5) || c == 0 || (c == 4 && row < 4);
-                if (ch == 'I') {
-                    on = c == 2 || row == 0 || row == 6;
-                }
-            } else if (ch >= 'a' && ch <= 'z') {
-                on = (row >= 2 && (c == 0 || c == 4 || row == 2 || row == 6));
-            } else if (ch >= '0' && ch <= '9') {
-                on = (row == 0 || row == 6 || c == 0 || c == 4);
-            } else if (ch == '.' || ch == ':') {
-                on = (row == 5 || row == 6) && c == 2;
-            } else if (ch == '-') {
-                on = row == 3;
-            } else if (ch == '/') {
-                on = (6 - row) == c;
-            } else {
-                on = bits & (1u << c);
+    for (row = 0; row < SOFT_FONT_ROWS; ++row) {
+        for (col = 0; col < SOFT_FONT_COLS; ++col) {
+            if (!soft_font_pixel((int)ch, col, row)) {
+                continue;
             }
-            if (on) {
-                for (int sy = 0; sy < scale; ++sy) {
-                    for (int sx = 0; sx < scale; ++sx) {
-                        put(dc, x + c * scale + sx, y + row * scale + sy, rgb, alpha);
+            {
+                int sy;
+                int sx;
+                for (sy = 0; sy < scale; ++sy) {
+                    for (sx = 0; sx < scale; ++sx) {
+                        put(dc, x + col * scale + sx, y + row * scale + sy, rgb, alpha);
                     }
                 }
             }
@@ -381,7 +363,7 @@ icon_measure_label(void *hdc, const wchar_t *text, float px, int weight)
     while (text[n]) {
         n++;
     }
-    return (float)(n * 6 * scale);
+    return (float)(n * SOFT_FONT_ADVANCE * scale);
 }
 
 void
@@ -407,8 +389,8 @@ icon_draw_label_alpha(
     if (scale < 1) {
         scale = 1;
     }
-    int glyph_w = 6 * scale;
-    int glyph_h = 7 * scale;
+    int glyph_w = SOFT_FONT_ADVANCE * scale;
+    int glyph_h = SOFT_FONT_ROWS * scale;
     int max_chars = (int)(w / (float)glyph_w);
     int cy = (int)(y + (h - (float)glyph_h) * 0.5f);
     int cx = (int)x;
@@ -440,7 +422,7 @@ icon_draw_label_end_alpha(
     if (scale < 1) {
         scale = 1;
     }
-    int glyph_w = 6 * scale;
+    int glyph_w = SOFT_FONT_ADVANCE * scale;
     int n = 0;
     while (text[n]) {
         n++;
@@ -486,8 +468,8 @@ icon_draw_label_full(
     if (scale < 1) {
         scale = 1;
     }
-    int glyph_w = 6 * scale;
-    int glyph_h = 7 * scale;
+    int glyph_w = SOFT_FONT_ADVANCE * scale;
+    int glyph_h = SOFT_FONT_ROWS * scale;
     int cy = (int)(y + (h - (float)glyph_h) * 0.5f);
     int cx = (int)x;
     (void)w;
@@ -524,7 +506,7 @@ icon_draw_label_center_alpha(
     while (text[n]) {
         n++;
     }
-    float tw = (float)(n * 6 * scale);
+    float tw = (float)(n * SOFT_FONT_ADVANCE * scale);
     icon_draw_label_alpha(hdc, x + (w - tw) * 0.5f, y, w, h, text, rgb, px, weight, alpha);
 }
 
@@ -558,8 +540,8 @@ icon_draw_label_shimmer(
     if (scale < 1) {
         scale = 1;
     }
-    int glyph_w = 6 * scale;
-    int glyph_h = 7 * scale;
+    int glyph_w = SOFT_FONT_ADVANCE * scale;
+    int glyph_h = SOFT_FONT_ROWS * scale;
     int n = 0;
     while (text[n]) {
         n++;
@@ -615,7 +597,7 @@ icon_draw_label_center(
     while (text[n]) {
         n++;
     }
-    float tw = (float)(n * 6 * scale);
+    float tw = (float)(n * SOFT_FONT_ADVANCE * scale);
     icon_draw_label(hdc, x + (w - tw) * 0.5f, y, w, h, text, rgb, px, weight);
 }
 

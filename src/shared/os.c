@@ -480,3 +480,57 @@ os_list_dir(const char *path, os_dir_cb cb, void *user)
     return count;
 #endif
 }
+
+int
+os_clipboard_set(const char *text)
+{
+    if (!text) {
+        return 0;
+    }
+#ifdef _WIN32
+    {
+        int n = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0);
+        HGLOBAL mem;
+        wchar_t *wide;
+
+        if (n <= 1) {
+            return 0;
+        }
+        mem = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)n * sizeof(wchar_t));
+        if (!mem) {
+            return 0;
+        }
+        wide = (wchar_t *)GlobalLock(mem);
+        if (!wide) {
+            GlobalFree(mem);
+            return 0;
+        }
+        MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, n);
+        GlobalUnlock(mem);
+        if (!OpenClipboard(NULL)) {
+            GlobalFree(mem);
+            return 0;
+        }
+        EmptyClipboard();
+        if (!SetClipboardData(CF_UNICODETEXT, mem)) {
+            CloseClipboard();
+            GlobalFree(mem);
+            return 0;
+        }
+        CloseClipboard();
+        return 1;
+    }
+#else
+    {
+        FILE *pipe = popen("xclip -selection clipboard", "w");
+        if (!pipe) {
+            pipe = popen("wl-copy", "w");
+        }
+        if (!pipe) {
+            return 0;
+        }
+        fputs(text, pipe);
+        return pclose(pipe) == 0;
+    }
+#endif
+}

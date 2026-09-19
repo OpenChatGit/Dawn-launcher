@@ -6,6 +6,7 @@
 #include "steam_auth.h"
 #include "video_bg.h"
 #include "shared/draw.h"
+#include "shared/soft_font.h"
 
 static void platform_fill_rect_alpha(int x, int y, int w, int h, uint32_t color, int alpha);
 static void platform_draw_label(int x, int y, const char *text, uint32_t color, int px, int weight, int tracking);
@@ -187,7 +188,7 @@ platform_measure_label(const char *text, int px, int weight, int *w, int *h, int
     (void)weight;
     int n = text ? (int)strlen(text) : 0;
     if (w) {
-        *w = n * (px * 6 / 10);
+        *w = n * (px * SOFT_FONT_ADVANCE / SOFT_FONT_ROWS);
     }
     if (h) {
         *h = px + 4;
@@ -200,34 +201,23 @@ platform_measure_label(const char *text, int px, int weight, int *w, int *h, int
 static void
 draw_glyph(int x, int y, int scale, char ch, uint32_t color)
 {
-    if (ch < 32 || ch > 126) {
-        ch = '?';
+    int row;
+    int col;
+
+    if (scale < 1) {
+        scale = 1;
     }
-    for (int row = 0; row < 7; ++row) {
-        for (int c = 0; c < 5; ++c) {
-            int on = 0;
-            if (ch >= 'A' && ch <= 'Z') {
-                on = ((row == 0 || row == 3) && c < 5) || c == 0 || (c == 4 && row < 4);
-                if (ch == 'I') {
-                    on = c == 2 || row == 0 || row == 6;
-                }
-            } else if (ch >= 'a' && ch <= 'z') {
-                on = (row >= 2 && (c == 0 || c == 4 || row == 2 || row == 6));
-            } else if (ch >= '0' && ch <= '9') {
-                on = (row == 0 || row == 6 || c == 0 || c == 4);
-            } else if (ch == '.' || ch == ':') {
-                on = (row == 5 || row == 6) && c == 2;
-            } else if (ch == '-') {
-                on = row == 3;
-            } else if (ch == '/') {
-                on = (6 - row) == c;
-            } else if (ch != ' ') {
-                on = ((unsigned)ch + (unsigned)row * 3u) & (1u << c);
+    for (row = 0; row < SOFT_FONT_ROWS; ++row) {
+        for (col = 0; col < SOFT_FONT_COLS; ++col) {
+            if (!soft_font_pixel((int)(unsigned char)ch, col, row)) {
+                continue;
             }
-            if (on) {
-                for (int sy = 0; sy < scale; ++sy) {
-                    for (int sx = 0; sx < scale; ++sx) {
-                        put_pixel(x + c * scale + sx, y + row * scale + sy, color, 255);
+            {
+                int sy;
+                int sx;
+                for (sy = 0; sy < scale; ++sy) {
+                    for (sx = 0; sx < scale; ++sx) {
+                        put_pixel(x + col * scale + sx, y + row * scale + sy, color, 255);
                     }
                 }
             }
@@ -246,7 +236,7 @@ platform_draw_label(int x, int y, const char *text, uint32_t color, int px, int 
     if (scale < 1) {
         scale = 1;
     }
-    int advance = 6 * scale + (tracking > 0 ? tracking / 20 : 0);
+    int advance = SOFT_FONT_ADVANCE * scale + (tracking > 0 ? tracking / 20 : 0);
     for (int i = 0; text[i]; ++i) {
         draw_glyph(x + i * advance, y, scale, text[i], color);
     }
@@ -649,6 +639,11 @@ window_bind_platform(HostWindow *window, Platform *platform, const char *project
     platform->install_submit_secret = install_job_submit_secret;
     platform->install_start = install_job_start;
     platform->install_cancel = install_job_cancel;
+    platform->install_pause = install_job_pause;
+    platform->install_paused = install_job_paused;
+    platform->install_can_pause = install_job_can_pause;
+    platform->install_can_simulate = install_job_can_simulate;
+    platform->install_simulate = install_job_simulate;
     platform->install_busy = install_job_busy;
     platform->install_need = install_job_need;
     platform->install_progress = install_job_progress;

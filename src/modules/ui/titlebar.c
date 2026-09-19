@@ -6,13 +6,14 @@
 #include "shared/icons.h"
 #include "shared/theme.h"
 #include "shared/os.h"
+#include "shared/user_id.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
 
-#define ACCOUNT_MENU_W 248.0f
+#define ACCOUNT_MENU_W 268.0f
 #define ACCOUNT_INSET 12.0f
 #define ACCOUNT_ICON 32.0f
 #define ACCOUNT_TEXT_GAP 12.0f
@@ -60,6 +61,10 @@ typedef struct TitlebarLayout {
     int tip_y;
     int tip_w;
     int tip_h;
+    int copy_x;
+    int copy_y;
+    int copy_w;
+    int copy_h;
 } TitlebarLayout;
 
 static float g_hover_min;
@@ -71,9 +76,11 @@ static float g_hover_update_close;
 static int g_update_open;
 static float g_hover_signin;
 static float g_hover_settings;
+static float g_hover_copy;
 static float g_hover_tip;
 static float g_menu;
 static int g_open;
+static uint32_t g_copied_ms;
 
 static int
 hit(int mx, int my, int x, int y, int w, int h)
@@ -189,6 +196,25 @@ layout(Platform *platform, TitlebarLayout *out)
     out->item_y = out->settings_y + out->item_h + px(ACCOUNT_ROW_GAP, s);
     out->item_w = out->menu_w - inset * 2;
     out->text_x = out->ident_x + out->icon_s + px(ACCOUNT_TEXT_GAP, s);
+    {
+        float copy_px = 11.0f * s;
+        float tw = 0.0f;
+        float pad = 8.0f * s;
+
+        if (platform->hdc) {
+            tw = icon_measure_label(platform->hdc, L"Copy ID", copy_px, 600);
+        }
+        if (tw < 8.0f) {
+            tw = 7.0f * copy_px * 0.62f;
+        }
+        out->copy_h = px(22, s);
+        out->copy_w = (int)(pad + tw + pad + 0.5f);
+        out->copy_x = out->menu_x + out->menu_w - inset - out->copy_w;
+        out->copy_y = out->ident_y + 2 + ((int)((float)out->ident_h * 0.55f) - out->copy_h) / 2;
+        if (out->copy_y < out->ident_y) {
+            out->copy_y = out->ident_y;
+        }
+    }
 }
 
 static void
@@ -488,13 +514,17 @@ account_menu(
     }
 
     float text_x = (float)L->text_x;
-    float text_w = x + w - text_x - (float)px(ACCOUNT_INSET, s);
+    float name_w_max = (float)L->copy_x - 8.0f * s - text_x;
+    float status_w = x + w - text_x - (float)px(ACCOUNT_INSET, s);
+    if (name_w_max < 24.0f) {
+        name_w_max = 24.0f;
+    }
     float name_h = (float)L->ident_h * 0.55f;
     icon_draw_label_alpha(
         platform->hdc,
         text_x,
         ident_y + 2.0f,
-        text_w,
+        name_w_max,
         name_h,
         signed_in && name_w[0] ? name_w : L"Guest",
         chrome->title_color,
@@ -506,7 +536,7 @@ account_menu(
         platform->hdc,
         text_x,
         ident_y + name_h - 1.0f,
-        text_w,
+        status_w,
         (float)L->ident_h - name_h,
         signed_in ? L"Signed in" : L"Not signed in",
         chrome->muted,
@@ -514,6 +544,49 @@ account_menu(
         400,
         (int)(open * 255.0f)
     );
+
+    {
+        int copied = g_copied_ms && (os_tick_ms() - g_copied_ms) < 1400u;
+        float use = platform->mouse_down &&
+            hit(platform->mouse_x, platform->mouse_y, L->copy_x, L->copy_y, L->copy_w, L->copy_h)
+            ? 1.0f : g_hover_copy;
+        uint32_t fg = use > 0.2f || copied ? chrome->hover : chrome->muted;
+        int fill = (int)(open * (copied ? 40.0f : (18.0f + use * 22.0f)));
+
+        icon_round_rect(
+            platform->hdc,
+            (float)L->copy_x,
+            (float)L->copy_y,
+            (float)L->copy_w,
+            (float)L->copy_h,
+            (float)L->copy_h * 0.5f,
+            chrome->hover,
+            fill
+        );
+        icon_round_stroke(
+            platform->hdc,
+            (float)L->copy_x,
+            (float)L->copy_y,
+            (float)L->copy_w,
+            (float)L->copy_h,
+            (float)L->copy_h * 0.5f,
+            use > 0.2f || copied ? chrome->hover : chrome->muted,
+            (int)(open * (36.0f + use * 24.0f)),
+            1.0f
+        );
+        icon_draw_label_center_alpha(
+            platform->hdc,
+            (float)L->copy_x,
+            (float)L->copy_y,
+            (float)L->copy_w,
+            (float)L->copy_h,
+            copied ? L"Copied" : L"Copy ID",
+            fg,
+            (float)px(11, s),
+            600,
+            (int)(open * 255.0f)
+        );
+    }
 
     if (signed_in && L->dlc_h > 0) {
         float dlc_y = (float)L->dlc_y;
@@ -748,6 +821,7 @@ titlebar_tick(Platform *platform, float dt)
     int over_menu = !modal_open && g_open && hit(mx, my, L.menu_x, L.menu_y, L.menu_w, L.menu_h);
     int over_settings = !modal_open && g_open && hit(mx, my, L.item_x, L.settings_y, L.item_w, L.item_h);
     int over_item = !modal_open && g_open && hit(mx, my, L.item_x, L.item_y, L.item_w, L.item_h);
+    int over_copy = !modal_open && g_open && hit(mx, my, L.copy_x, L.copy_y, L.copy_w, L.copy_h);
 
     g_hover_close = approach(g_hover_close, over_close ? 1.0f : 0.0f, dt);
     g_hover_min = approach(g_hover_min, over_min ? 1.0f : 0.0f, dt);
@@ -760,6 +834,11 @@ titlebar_tick(Platform *platform, float dt)
     g_hover_avatar = approach(g_hover_avatar, (over_avatar || g_open) ? 1.0f : 0.0f, dt);
     g_hover_signin = approach(g_hover_signin, over_item ? 1.0f : 0.0f, dt);
     g_hover_settings = approach(g_hover_settings, over_settings ? 1.0f : 0.0f, dt);
+    g_hover_copy = approach(g_hover_copy, over_copy ? 1.0f : 0.0f, dt);
+    if (g_copied_ms && (os_tick_ms() - g_copied_ms) > 1400u) {
+        g_copied_ms = 0;
+    }
+    user_id_get();
     g_menu = g_open ? 1.0f : 0.0f;
 
     control_button(
@@ -826,6 +905,13 @@ titlebar_tick(Platform *platform, float dt)
             g_update_open = 1;
         } else if (over_avatar) {
             g_open = !g_open;
+        } else if (over_copy) {
+            if (user_id_copy()) {
+                g_copied_ms = os_tick_ms();
+                if (g_copied_ms == 0) {
+                    g_copied_ms = 1;
+                }
+            }
         } else if (over_settings) {
             g_open = 0;
             settings_modal_open();

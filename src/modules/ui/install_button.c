@@ -52,10 +52,12 @@ typedef struct InstallLayout {
     float sunrise_y;
     float full_y;
     float uninstall_y;
+    float sim_y;
     int show_dawn;
     int show_sunrise;
     int show_full;
     int show_plain;
+    int show_sim;
     float item_h;
     float hint_x;
     float hint_y;
@@ -71,6 +73,7 @@ static float g_hover_dawn;
 static float g_hover_sunrise;
 static float g_hover_full;
 static float g_hover_uninstall;
+static float g_hover_sim;
 static float g_menu;
 static float g_hint;
 static float g_shimmer;
@@ -351,6 +354,24 @@ is_game_active(Platform *platform)
     return game_state(platform) > 0;
 }
 
+static int
+is_paused(Platform *platform)
+{
+    return platform && platform->install_paused && platform->install_paused();
+}
+
+static int
+can_pause(Platform *platform)
+{
+    return platform && platform->install_can_pause && platform->install_can_pause();
+}
+
+static int
+can_simulate(Platform *platform)
+{
+    return platform && platform->install_can_simulate && platform->install_can_simulate();
+}
+
 static void
 copy_label(Platform *platform, char *out, int max, IconId *icon)
 {
@@ -366,14 +387,24 @@ copy_label(Platform *platform, char *out, int max, IconId *icon)
         *icon = ICON_X;
         return;
     }
-    if (is_ready(platform)) {
-        snprintf(out, (size_t)max, "Play");
+    if (is_paused(platform) && can_pause(platform)) {
+        snprintf(out, (size_t)max, "Resume");
         *icon = ICON_PLAY;
+        return;
+    }
+    if (is_busy(platform) && can_pause(platform)) {
+        snprintf(out, (size_t)max, "Pause");
+        *icon = ICON_PAUSE;
         return;
     }
     if (is_busy(platform)) {
         snprintf(out, (size_t)max, "Cancel");
         *icon = ICON_X;
+        return;
+    }
+    if (is_ready(platform)) {
+        snprintf(out, (size_t)max, "Play");
+        *icon = ICON_PLAY;
         return;
     }
     {
@@ -427,7 +458,7 @@ copy_hint(Platform *platform, char *out, int max, int *shimmer)
         }
     }
     if (busy) {
-        *shimmer = 1;
+        *shimmer = !is_paused(platform);
         progress = platform->install_progress ? platform->install_progress() : 0.0f;
         if (!status[0]) {
             snprintf(out, (size_t)max, "Working");
@@ -532,12 +563,17 @@ layout(Platform *platform, InstallLayout *out, const char *label)
         out->show_sunrise = 0;
         out->show_full = 0;
         out->show_plain = 0;
+        out->show_sim = 0;
         if (busy || stop) {
             out->show_plain = 1;
             rows += 1;
         } else {
             out->show_dawn = (parts & INSTALL_PART_DAWN) != 0;
             out->show_sunrise = (parts & INSTALL_PART_SUNRISE) != 0;
+            if (can_simulate(platform)) {
+                out->show_sim = 1;
+                rows += 1;
+            }
             if (out->show_dawn) {
                 rows += 1;
             }
@@ -567,6 +603,10 @@ layout(Platform *platform, InstallLayout *out, const char *label)
         y = out->menu_y + MENU_INSET * dpi;
         out->verify_y = y;
         y += out->item_h + MENU_ITEM_GAP * dpi;
+        out->sim_y = out->show_sim ? y : -1000.0f;
+        if (out->show_sim) {
+            y += out->item_h + MENU_ITEM_GAP * dpi;
+        }
         out->dawn_y = out->show_dawn ? y : -1000.0f;
         if (out->show_dawn) {
             y += out->item_h + MENU_ITEM_GAP * dpi;
@@ -731,7 +771,10 @@ install_button_tick(Platform *platform, float dt)
     int blocked = login_modal_visible() || settings_modal_visible();
     int ready = is_ready(platform);
     int busy = is_busy(platform);
+    int paused = is_paused(platform);
+    int pausable = can_pause(platform);
     int stop = is_game_active(platform);
+    int danger = stop || (busy && !pausable);
     int mx = platform->mouse_x;
     int my = platform->mouse_y;
     int over_main = !blocked && hit(mx, my, L.main_x, L.y, L.main_w, L.h);
@@ -740,6 +783,7 @@ install_button_tick(Platform *platform, float dt)
     int over_menu = !blocked && (g_open || g_menu > 0.02f) &&
         hit(mx, my, L.menu_x, L.menu_y, L.menu_w, L.menu_h);
     int over_verify = !blocked && g_open && hit(mx, my, L.item_x, L.verify_y, L.item_w, L.item_h);
+    int over_sim = !blocked && g_open && L.show_sim && hit(mx, my, L.item_x, L.sim_y, L.item_w, L.item_h);
     int over_dawn = !blocked && g_open && L.show_dawn && hit(mx, my, L.item_x, L.dawn_y, L.item_w, L.item_h);
     int over_sunrise = !blocked && g_open && L.show_sunrise && hit(mx, my, L.item_x, L.sunrise_y, L.item_w, L.item_h);
     int over_full = !blocked && g_open && L.show_full && hit(mx, my, L.item_x, L.full_y, L.item_w, L.item_h);
@@ -751,7 +795,7 @@ install_button_tick(Platform *platform, float dt)
         g_confirm = 0;
     }
 
-    if (busy || stop) {
+    if (danger) {
         g_hover_main = approach(g_hover_main, over_split ? 1.0f : 0.0f, dt);
         g_hover_caret = g_hover_main;
     } else {
@@ -759,6 +803,7 @@ install_button_tick(Platform *platform, float dt)
         g_hover_caret = approach(g_hover_caret, (over_caret || g_open) ? 1.0f : 0.0f, dt);
     }
     g_hover_verify = approach(g_hover_verify, over_verify ? 1.0f : 0.0f, dt);
+    g_hover_sim = approach(g_hover_sim, over_sim ? 1.0f : 0.0f, dt);
     g_hover_dawn = approach(g_hover_dawn, over_dawn ? 1.0f : 0.0f, dt);
     g_hover_sunrise = approach(g_hover_sunrise, over_sunrise ? 1.0f : 0.0f, dt);
     g_hover_full = approach(g_hover_full, over_full ? 1.0f : 0.0f, dt);
@@ -772,7 +817,7 @@ install_button_tick(Platform *platform, float dt)
     }
 
     uint32_t fg = BTN_TEXT;
-    if ((busy || stop) && g_hover_main > 0.02f) {
+    if (danger && g_hover_main > 0.02f) {
         fg = modal_mix(BTN_TEXT, 0xe81123, (int)(g_hover_main * 180.0f));
     }
     if (g_hint > 0.02f && L.hint_w > 8.0f) {
@@ -812,7 +857,7 @@ install_button_tick(Platform *platform, float dt)
         }
     }
     float radius = L.h * 0.5f;
-    float progress = busy && !stop && platform->install_progress ? platform->install_progress() : 0.0f;
+    float progress = (busy || paused) && !stop && platform->install_progress ? platform->install_progress() : 0.0f;
     if (progress < 0.0f) {
         progress = 0.0f;
     }
@@ -824,7 +869,7 @@ install_button_tick(Platform *platform, float dt)
     icon_round_rect(platform->hdc, L.x, L.y, L.w, L.h, radius, BTN_FILL, 255);
     {
         float fill_w = L.w * progress;
-        if (busy && !stop && g_hover_main < 0.98f && fill_w >= radius) {
+        if ((busy || paused) && !stop && !danger && fill_w >= radius) {
             icon_round_rect_corners(
                 platform->hdc,
                 L.x,
@@ -840,7 +885,7 @@ install_button_tick(Platform *platform, float dt)
             );
         }
     }
-    if ((busy || stop) && g_hover_main > 0.02f) {
+    if (danger && g_hover_main > 0.02f) {
         icon_round_rect(
             platform->hdc,
             L.x,
@@ -866,7 +911,7 @@ install_button_tick(Platform *platform, float dt)
             (int)(g_hover_main * 255.0f)
         );
     }
-    if (!busy && !stop && g_hover_caret > 0.02f) {
+    if (!danger && g_hover_caret > 0.02f) {
         icon_round_rect_corners(
             platform->hdc,
             L.caret_x,
@@ -884,7 +929,7 @@ install_button_tick(Platform *platform, float dt)
 
     float div_h = L.h * 0.46f;
     int div_a = 28;
-    if (busy || stop) {
+    if (danger) {
         div_a = (int)(28.0f * (1.0f - g_hover_main) + 0.5f);
     }
     if (div_a > 0) {
@@ -933,6 +978,22 @@ install_button_tick(Platform *platform, float dt)
             ICON_SEARCH,
             L"Check Game Integrity"
         );
+        if (L.show_sim) {
+            draw_menu_item(
+                platform,
+                L.item_x,
+                L.sim_y,
+                L.item_w,
+                L.item_h,
+                g_menu,
+                g_hover_sim,
+                platform->mouse_down && over_sim,
+                0,
+                0,
+                ICON_DOWNLOAD,
+                L"Simulate download"
+            );
+        }
         if (L.show_dawn) {
             draw_menu_item(
                 platform,
@@ -1011,6 +1072,10 @@ install_button_tick(Platform *platform, float dt)
             if (platform->game_stop) {
                 platform->game_stop();
             }
+        } else if (pausable) {
+            if (platform->install_pause) {
+                platform->install_pause();
+            }
         } else if (busy) {
             if (platform->install_cancel) {
                 platform->install_cancel();
@@ -1019,6 +1084,8 @@ install_button_tick(Platform *platform, float dt)
             if (platform->install_launch) {
                 platform->install_launch();
             }
+        } else if (can_simulate(platform) && platform->install_simulate) {
+            platform->install_simulate();
         } else if (!login_modal_signed_in()) {
             login_modal_open();
         } else {
@@ -1035,7 +1102,7 @@ install_button_tick(Platform *platform, float dt)
             }
             return;
         }
-        if (busy) {
+        if (busy && !pausable) {
             g_open = 0;
             g_confirm = 0;
             if (platform->install_cancel) {
@@ -1056,6 +1123,14 @@ install_button_tick(Platform *platform, float dt)
             login_modal_open();
         } else if (platform->install_verify) {
             platform->install_verify();
+        }
+        return;
+    }
+    if (over_sim && !busy && !stop && can_simulate(platform)) {
+        g_open = 0;
+        g_confirm = 0;
+        if (platform->install_simulate) {
+            platform->install_simulate();
         }
         return;
     }

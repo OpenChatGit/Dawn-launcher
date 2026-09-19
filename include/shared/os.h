@@ -58,6 +58,7 @@ int os_app_root(char *out, size_t max, const char *fallback);
 int os_utf8_to_wide(const char *utf8, wchar_t *out, int max);
 void os_open_url(const char *url);
 int os_launch(const char *path);
+int os_clipboard_set(const char *text);
 
 typedef int (*os_dir_cb)(const char *name, int is_dir, void *user);
 int os_list_dir(const char *path, os_dir_cb cb, void *user);

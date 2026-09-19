@@ -24,6 +24,11 @@ void install_job_set_user(const char *username);
 void install_job_submit_secret(const char *text);
 int install_job_start(void);
 void install_job_cancel(void);
+void install_job_pause(void);
+int install_job_paused(void);
+int install_job_can_pause(void);
+int install_job_can_simulate(void);
+void install_job_simulate(void);
 
 int install_job_busy(void);
 int install_job_need(void);
