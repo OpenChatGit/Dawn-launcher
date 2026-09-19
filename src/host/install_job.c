@@ -4114,20 +4114,8 @@ write_launch_scripts(const char *dir)
             if (file) {
                 fputs(
                     "#!/usr/bin/env sh\n"
-                    "set -e\n"
-                    "GAME_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n"
-                    "cd \"$GAME_DIR\"\n"
-                    "export DAWN_FOREST_BASELINE=1\n"
-                    "unset SteamAppId SteamGameId SteamOverlayGameId\n"
-                    "DATA_HOME=\"${XDG_DATA_HOME:-$HOME/.local/share}\"\n"
-                    "export WINEPREFIX=\"${DAWN_WINEPREFIX:-$DATA_HOME/Dawn/wineprefix}\"\n"
-                    "mkdir -p \"$WINEPREFIX\"\n"
-                    "if [ -n \"$DAWN_WINE\" ] && [ -x \"$DAWN_WINE\" ]; then\n"
-                    "  exec \"$DAWN_WINE\" \"$GAME_DIR/destiny2.exe\" \"$@\"\n"
-                    "fi\n"
-                    "if command -v wine64 >/dev/null 2>&1; then exec wine64 \"$GAME_DIR/destiny2.exe\" \"$@\"; fi\n"
-                    "if command -v wine >/dev/null 2>&1; then exec wine \"$GAME_DIR/destiny2.exe\" \"$@\"; fi\n"
-                    "echo \"[ERROR] Wine was not found.\"\n"
+                    "echo \"[ERROR] Dawn launch-destiny.sh is missing from the launcher scripts folder.\" >&2\n"
+                    "echo \"Dawn will not download Wine or DXVK. Reinstall the Linux package.\" >&2\n"
                     "exit 1\n",
                     file
                 );

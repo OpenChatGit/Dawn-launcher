@@ -1,13 +1,16 @@
 #!/usr/bin/env sh
 # Destiny 2 Linux launcher for Dawn.
-# Prefers Lutris wine-tkg + DXVK (tester setup: wine-tkg 11.9, DXVK 2.6.2).
-# Does not wrap Wine in steam-run — that makes `%AppData%` empty.
+# Uses only Wine/DXVK/Proton that are already on disk (Lutris wine-tkg + DXVK).
+# Never downloads runners, DXVK, Gecko, or Mono.
 set -e
 
 GAME_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$GAME_DIR"
 export DAWN_FOREST_BASELINE=1
 unset SteamAppId SteamGameId SteamOverlayGameId
+
+# wineboot must not fetch gecko/mono. DXVK overrides are added later if present.
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-mscoree,mshtml=}"
 
 if [ -z "${HOME:-}" ]; then
     HOME="$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || true)"
@@ -16,6 +19,27 @@ fi
 
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 PREFIX="${DAWN_WINEPREFIX:-$DATA_HOME/Dawn/wineprefix}"
+
+log() {
+    echo "[Dawn] $*" >&2
+}
+
+yaml_field() {
+    file="$1"
+    key="$2"
+    [ -f "$file" ] || return 1
+    line="$(grep -E "^[[:space:]]*${key}:[[:space:]]*" "$file" | head -n 1 || true)"
+    [ -n "$line" ] || return 1
+    val="${line#*:}"
+    val="${val#"${val%%[![:space:]]*}"}"
+    val="${val%"${val##*[![:space:]]}"}"
+    val="${val#\"}"
+    val="${val%\"}"
+    val="${val#\'}"
+    val="${val%\'}"
+    [ -n "$val" ] || return 1
+    printf '%s\n' "$val"
+}
 
 wine_from_dir() {
     d="$1"
@@ -27,6 +51,21 @@ wine_from_dir() {
         printf '%s\n' "$d/bin/wine"
         return 0
     fi
+    return 1
+}
+
+wine_from_name() {
+    name="$1"
+    [ -n "$name" ] || return 1
+    for base in \
+        "$HOME/.local/share/lutris/runners/wine" \
+        "$HOME/.var/app/net.lutris.Lutris/data/lutris/runners/wine" \
+        "/usr/share/lutris/runners/wine"
+    do
+        if [ -d "$base/$name" ]; then
+            wine_from_dir "$base/$name" && return 0
+        fi
+    done
     return 1
 }
 
@@ -61,17 +100,25 @@ pick_lutris_wine() {
         printf '%s\n' "$DAWN_WINE"
         return 0
     fi
-    set -- \
+    for base in \
         "$HOME/.local/share/lutris/runners/wine" \
         "$HOME/.var/app/net.lutris.Lutris/data/lutris/runners/wine" \
         "/usr/share/lutris/runners/wine"
-    for base in "$@"; do
+    do
         scan_wine_base "$base" tkg11 && return 0
     done
-    for base in "$@"; do
+    for base in \
+        "$HOME/.local/share/lutris/runners/wine" \
+        "$HOME/.var/app/net.lutris.Lutris/data/lutris/runners/wine" \
+        "/usr/share/lutris/runners/wine"
+    do
         scan_wine_base "$base" tkg && return 0
     done
-    for base in "$@"; do
+    for base in \
+        "$HOME/.local/share/lutris/runners/wine" \
+        "$HOME/.var/app/net.lutris.Lutris/data/lutris/runners/wine" \
+        "/usr/share/lutris/runners/wine"
+    do
         scan_wine_base "$base" any && return 0
     done
     return 1
@@ -79,6 +126,12 @@ pick_lutris_wine() {
 
 dxvk_ok() {
     [ -f "$1/x64/d3d11.dll" ] || [ -f "$1/x64/dxgi.dll" ]
+}
+
+prefix_has_dxvk() {
+    prefix="${1:-$PREFIX}"
+    [ -f "$prefix/drive_c/windows/system32/d3d11.dll" ] &&
+        [ -f "$prefix/drive_c/windows/system32/dxgi.dll" ]
 }
 
 scan_dxvk_base() {
@@ -108,35 +161,55 @@ pick_dxvk() {
         printf '%s\n' "$DAWN_DXVK"
         return 0
     fi
-    set -- \
+    for base in \
         "$HOME/.local/share/lutris/runtime/dxvk" \
         "$HOME/.var/app/net.lutris.Lutris/data/lutris/runtime/dxvk" \
         "/usr/share/lutris/runtime/dxvk" \
         "/usr/share/dxvk" \
         "/usr/lib/dxvk"
-    for base in "$@"; do
+    do
         scan_dxvk_base "$base" 1 && return 0
     done
-    for base in "$@"; do
+    for base in \
+        "$HOME/.local/share/lutris/runtime/dxvk" \
+        "$HOME/.var/app/net.lutris.Lutris/data/lutris/runtime/dxvk" \
+        "/usr/share/lutris/runtime/dxvk" \
+        "/usr/share/dxvk" \
+        "/usr/lib/dxvk"
+    do
         scan_dxvk_base "$base" 0 && return 0
     done
     return 1
 }
 
-install_dxvk() {
-    dxvk="$1"
+have_local_dxvk() {
+    prefix_has_dxvk "$PREFIX" && return 0
+    pick_dxvk >/dev/null && return 0
+    return 1
+}
+
+apply_local_dxvk() {
+    if prefix_has_dxvk "$PREFIX"; then
+        log "dxvk=already in prefix"
+        export WINEDLLOVERRIDES="d3d8,d3d9,d3d10core,d3d11,dxgi=n,b;mscoree,mshtml="
+        return 0
+    fi
+    DXVK="$(pick_dxvk)" || return 1
+    log "dxvk=$DXVK (local copy into prefix)"
     sys32="$PREFIX/drive_c/windows/system32"
     sys64="$PREFIX/drive_c/windows/syswow64"
     mkdir -p "$sys32"
     for dll in d3d8.dll d3d9.dll d3d10core.dll d3d11.dll d3d12.dll dxgi.dll; do
-        if [ -f "$dxvk/x64/$dll" ]; then
-            cp -f "$dxvk/x64/$dll" "$sys32/$dll"
+        if [ -f "$DXVK/x64/$dll" ]; then
+            cp -f "$DXVK/x64/$dll" "$sys32/$dll"
         fi
-        if [ -f "$dxvk/x32/$dll" ]; then
+        if [ -f "$DXVK/x32/$dll" ]; then
             mkdir -p "$sys64"
-            cp -f "$dxvk/x32/$dll" "$sys64/$dll"
+            cp -f "$DXVK/x32/$dll" "$sys64/$dll"
         fi
     done
+    export WINEDLLOVERRIDES="d3d8,d3d9,d3d10core,d3d11,dxgi=n,b;mscoree,mshtml="
+    return 0
 }
 
 ensure_prefix() {
@@ -146,40 +219,89 @@ ensure_prefix() {
     export WINEDEBUG="${WINEDEBUG:--all}"
     export WINEESYNC="${WINEESYNC:-1}"
     export WINEFSYNC="${WINEFSYNC:-1}"
-    if [ ! -d "$PREFIX/drive_c/users" ]; then
-        boot="$(dirname "$wine")/wineboot"
-        if [ -x "$boot" ]; then
-            WINEPREFIX="$PREFIX" "$boot" -u >/dev/null 2>&1 || true
-        else
-            WINEPREFIX="$PREFIX" "$wine" wineboot -u >/dev/null 2>&1 || true
-        fi
+    if [ -d "$PREFIX/drive_c/users" ]; then
+        return 0
     fi
+    log "prefix init (no download)"
+    boot="$(dirname "$wine")/wineboot"
+    if [ -x "$boot" ]; then
+        WINEPREFIX="$PREFIX" WINEDLLOVERRIDES="mscoree,mshtml=" "$boot" -u >/dev/null 2>&1 || true
+    else
+        WINEPREFIX="$PREFIX" WINEDLLOVERRIDES="mscoree,mshtml=" "$wine" wineboot -u >/dev/null 2>&1 || true
+    fi
+}
+
+# Reuse a Lutris game that already points at this destiny2.exe.
+use_lutris_game_if_present() {
+    for dir in \
+        "$HOME/.config/lutris/games" \
+        "$HOME/.var/app/net.lutris.Lutris/config/lutris/games"
+    do
+        [ -d "$dir" ] || continue
+        for f in "$dir"/*.yml "$dir"/*.yaml; do
+            [ -f "$f" ] || continue
+            exe="$(yaml_field "$f" exe || true)"
+            case "$exe" in
+            "$GAME_DIR/destiny2.exe"|"$GAME_DIR/Destiny2.exe") ;;
+            *)
+                echo "$exe" | grep -qiE 'destiny2\.exe' || continue
+                ;;
+            esac
+            pref="$(yaml_field "$f" prefix || yaml_field "$f" wineprefix || true)"
+            ver="$(yaml_field "$f" version || true)"
+            wine=""
+            game_prefix="${pref:-$PREFIX}"
+            if [ -n "$ver" ]; then
+                wine="$(wine_from_name "$ver" || true)"
+            fi
+            if [ -z "$wine" ]; then
+                wine="$(pick_lutris_wine || true)"
+            fi
+            if [ -z "$wine" ] || [ ! -x "$wine" ]; then
+                continue
+            fi
+            if ! prefix_has_dxvk "$game_prefix" && ! pick_dxvk >/dev/null; then
+                log "skip lutris game $(basename "$f"): no local DXVK"
+                continue
+            fi
+            PREFIX="$game_prefix"
+            log "lutris-game=$(basename "$f")"
+            run_wine_game "$wine" "$@"
+        done
+    done
+    return 1
 }
 
 run_wine_game() {
     wine="$1"
     shift
-    echo "[Dawn] wine=$wine" >&2
-    echo "[Dawn] prefix=$PREFIX" >&2
-    ensure_prefix "$wine"
-    if DXVK="$(pick_dxvk)"; then
-        echo "[Dawn] dxvk=$DXVK" >&2
-        install_dxvk "$DXVK"
-        if [ -z "${WINEDLLOVERRIDES:-}" ]; then
-            export WINEDLLOVERRIDES="d3d8,d3d9,d3d10core,d3d11,dxgi=n,b"
-        fi
-    else
-        echo "[Dawn] dxvk=missing (install Lutris DXVK 2.6.2)" >&2
+    if ! have_local_dxvk; then
+        log "wine=$wine but no local DXVK; not launching without it"
+        return 1
     fi
+    log "wine=$wine"
+    log "prefix=$PREFIX"
+    ensure_prefix "$wine"
+    apply_local_dxvk || {
+        log "DXVK apply failed"
+        return 1
+    }
     exec "$wine" "$GAME_DIR/destiny2.exe" "$@"
 }
 
 if [ -n "${DAWN_LUTRIS_GAME:-}" ] && command -v lutris >/dev/null 2>&1; then
+    log "DAWN_LUTRIS_GAME set; handing off to existing Lutris profile"
     exec lutris "lutris:rungame/$DAWN_LUTRIS_GAME"
 fi
 
+use_lutris_game_if_present "$@" || true
+
 if WINE="$(pick_lutris_wine)"; then
-    run_wine_game "$WINE" "$@"
+    if have_local_dxvk; then
+        run_wine_game "$WINE" "$@"
+    else
+        log "found $WINE but no local DXVK under Lutris runtime; not downloading"
+    fi
 fi
 
 for root in \
@@ -199,20 +321,23 @@ do
             export STEAM_COMPAT_CLIENT_INSTALL_PATH="$root"
             export STEAM_COMPAT_DATA_PATH="${DAWN_PROTON_COMPAT:-$DATA_HOME/Dawn/proton-compat}"
             mkdir -p "$STEAM_COMPAT_DATA_PATH"
-            echo "[Dawn] proton=$cand" >&2
-            echo "[Dawn] compat=$STEAM_COMPAT_DATA_PATH" >&2
+            log "proton=$cand (already installed, built-in DXVK)"
+            log "compat=$STEAM_COMPAT_DATA_PATH"
             exec "$cand" run "$GAME_DIR/destiny2.exe" "$@"
         fi
     done
 done
 
-if command -v wine64 >/dev/null 2>&1; then
-    run_wine_game "$(command -v wine64)" "$@"
-fi
-if command -v wine >/dev/null 2>&1; then
-    run_wine_game "$(command -v wine)" "$@"
+if have_local_dxvk; then
+    if command -v wine64 >/dev/null 2>&1; then
+        run_wine_game "$(command -v wine64)" "$@"
+    fi
+    if command -v wine >/dev/null 2>&1; then
+        run_wine_game "$(command -v wine)" "$@"
+    fi
 fi
 
-echo "[ERROR] Neither Lutris wine-tkg, Proton, nor Wine was found." >&2
-echo "Install Lutris wine-tkg 11.9 and DXVK 2.6.2, or set DAWN_WINE / DAWN_DXVK." >&2
+echo "[ERROR] No already-installed Wine+DXVK (or Proton) was found." >&2
+echo "Dawn does not download Wine or DXVK. Install Lutris wine-tkg 11.9 and DXVK 2.6.2, then Play again." >&2
+echo "Or set DAWN_WINE / DAWN_DXVK / DAWN_WINEPREFIX to paths you already have." >&2
 exit 1

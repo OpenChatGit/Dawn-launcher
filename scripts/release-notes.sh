@@ -12,9 +12,9 @@ fi
 
 if [ "$KIND" = "official" ]; then
     cat > "$OUT" <<EOF
-Linux Play now prefers Lutris wine-tkg (11.9) plus DXVK 2.6.2 instead of system Wine without Vulkan. That was why the game rendered wrong.
+Linux Play uses only Wine/DXVK already on disk (Lutris wine-tkg 11.9 and DXVK 2.6.2 first). Dawn does not download a Wine build or DXVK.
 
-The launcher uses its own WINEPREFIX under Dawn and runs wineboot first, so \`%AppData%\` is a real path. steam-run is no longer wrapping Wine (that emptied AppData even when a manual \`wine\` command worked).
+It reuses an existing Lutris Destiny prefix when present, or a Dawn prefix that already has DXVK. System Wine without DXVK is not used. steam-run is gone so \`%AppData%\` stays valid.
 
 Proton stays as a fallback with a Dawn compat path, not Steam compatdata 1085660.
 EOF
