@@ -347,7 +347,7 @@ modal_draw_button(
     uint32_t fill = modal_button_fill(use_hover);
     uint32_t fg = disabled ? chrome->muted : (use_hover > 0.2f ? chrome->hover : chrome->title_color);
     float pad = (float)modal_px(12, scale);
-    float icon_s = (float)modal_px(18, scale);
+    float icon_s = (float)modal_px(20, scale);
 
     icon_round_rect(hdc, x, y, w, h, radius, fill, (int)(anim * (disabled ? 180.0f : 255.0f)));
     icon_round_stroke(

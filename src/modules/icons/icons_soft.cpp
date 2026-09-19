@@ -1,20 +1,55 @@
 #include "shared/icons.h"
+#include "shared/app_font.h"
 #include "shared/draw.h"
 #include "shared/os.h"
 #include "shared/soft_font.h"
+#include "shared/svg_rast.h"
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
 
+typedef struct SvgMask {
+    unsigned char *rgba;
+    int dim;
+} SvgMask;
+
 static char g_root[MAX_PATH];
 static int g_icon_alpha = 255;
+static SvgMask g_steam_src;
+static SvgMask g_steam_fit;
+static int g_steam_fit_dim;
+
+static void put(SoftDc *dc, int x, int y, uint32_t rgb, int alpha);
+
+static int
+has_inter(void)
+{
+    char path[MAX_PATH];
+    return app_font_file(path, sizeof(path), 0) || app_font_file(path, sizeof(path), 1);
+}
+
+static void
+plot_dc(void *user, int x, int y, uint32_t rgb, int alpha)
+{
+    SoftDc *dc = (SoftDc *)user;
+    put(dc, x, y, rgb, alpha);
+}
 
 void
 icon_set_root(const char *project_root)
 {
     snprintf(g_root, sizeof(g_root), "%s", project_root ? project_root : ".");
+    app_font_set_root(g_root);
+    svg_rast_free(g_steam_src.rgba);
+    svg_rast_free(g_steam_fit.rgba);
+    g_steam_src.rgba = NULL;
+    g_steam_src.dim = 0;
+    g_steam_fit.rgba = NULL;
+    g_steam_fit.dim = 0;
+    g_steam_fit_dim = 0;
 }
 
 void
@@ -244,78 +279,412 @@ stroke_line(SoftDc *dc, float x0, float y0, float x1, float y1, float width, uin
     }
 }
 
+static int
+assets_file(char *out, int max, const char *name)
+{
+    char assets[MAX_PATH];
+
+    if (g_root[0] && os_join(assets, sizeof(assets), g_root, "assets") &&
+        os_join(out, max, assets, name) && os_file_exists(out)) {
+        return 1;
+    }
+    snprintf(out, max, "assets/%s", name);
+    return os_file_exists(out);
+}
+
+static void
+load_steam_src(void)
+{
+    char path[MAX_PATH];
+
+    if (g_steam_src.rgba) {
+        return;
+    }
+    if (!assets_file(path, (int)sizeof(path), "steam.svg")) {
+        return;
+    }
+    svg_rast_file(path, 512, &g_steam_src.rgba, &g_steam_src.dim);
+}
+
+static int
+steam_fit(int dim)
+{
+    int sw;
+    int sh;
+    int y;
+    unsigned char *out;
+
+    load_steam_src();
+    if (!g_steam_src.rgba || g_steam_src.dim < 2 || dim < 8) {
+        return 0;
+    }
+    if (g_steam_fit.rgba && g_steam_fit_dim == dim) {
+        return 1;
+    }
+    svg_rast_free(g_steam_fit.rgba);
+    g_steam_fit.rgba = NULL;
+    g_steam_fit.dim = 0;
+    g_steam_fit_dim = 0;
+    sw = g_steam_src.dim;
+    sh = g_steam_src.dim;
+    out = (unsigned char *)calloc((size_t)dim * (size_t)dim * 4u, 1);
+    if (!out) {
+        return 0;
+    }
+    for (y = 0; y < dim; y++) {
+        int x;
+        int sy0 = y * sh / dim;
+        int sy1 = (y + 1) * sh / dim;
+        if (sy1 <= sy0) {
+            sy1 = sy0 + 1;
+        }
+        if (sy1 > sh) {
+            sy1 = sh;
+        }
+        for (x = 0; x < dim; x++) {
+            int sx0 = x * sw / dim;
+            int sx1 = (x + 1) * sw / dim;
+            unsigned int a = 0;
+            unsigned int n = 0;
+            int sy;
+            if (sx1 <= sx0) {
+                sx1 = sx0 + 1;
+            }
+            if (sx1 > sw) {
+                sx1 = sw;
+            }
+            for (sy = sy0; sy < sy1; sy++) {
+                int sx;
+                const unsigned char *row = g_steam_src.rgba + (size_t)sy * (size_t)sw * 4u;
+                for (sx = sx0; sx < sx1; sx++) {
+                    a += row[sx * 4 + 3];
+                    n += 1;
+                }
+            }
+            if (n == 0) {
+                n = 1;
+            }
+            out[(y * dim + x) * 4 + 3] = (unsigned char)(a / n);
+        }
+    }
+    g_steam_fit.rgba = out;
+    g_steam_fit.dim = dim;
+    g_steam_fit_dim = dim;
+    return 1;
+}
+
+static int
+draw_steam_svg(SoftDc *dc, float cx, float cy, float size, uint32_t rgb, int alpha)
+{
+    int dim;
+    float left;
+    float top;
+    int x;
+    int y;
+
+    dim = (int)floorf(size + 0.5f);
+    if (dim < 16) {
+        dim = 16;
+    }
+    if (!steam_fit(dim)) {
+        return 0;
+    }
+    left = floorf(cx - (float)dim * 0.5f + 0.5f);
+    top = floorf(cy - (float)dim * 0.5f + 0.5f);
+    for (y = 0; y < dim; y++) {
+        for (x = 0; x < dim; x++) {
+            int cover = g_steam_fit.rgba[(y * dim + x) * 4 + 3];
+            int a;
+            if (cover <= 0) {
+                continue;
+            }
+            a = (cover * alpha) / 255;
+            if (a > 0) {
+                put(dc, (int)left + x, (int)top + y, rgb, a);
+            }
+        }
+    }
+    return 1;
+}
+
+typedef struct IconXf {
+    float left;
+    float top;
+    float s;
+} IconXf;
+
+static IconXf
+icon_xf(float cx, float cy, float size)
+{
+    IconXf xf;
+    float dest = floorf(size + 0.5f);
+    if (dest < 16.0f) {
+        dest = size;
+    }
+    xf.s = dest / 24.0f;
+    xf.left = floorf(cx - dest * 0.5f + 0.5f);
+    xf.top = floorf(cy - dest * 0.5f + 0.5f);
+    return xf;
+}
+
+static float
+ix(const IconXf *xf, float u)
+{
+    return xf->left + u * xf->s;
+}
+
+static float
+iy(const IconXf *xf, float v)
+{
+    return xf->top + v * xf->s;
+}
+
+static float
+icon_stroke(float size, float stroke)
+{
+    float dest = floorf(size + 0.5f);
+    float sw;
+    if (dest < 16.0f) {
+        dest = size;
+    }
+    sw = 1.75f * (dest / 24.0f);
+    if (stroke > 0.1f && stroke < 4.0f && stroke > sw * 1.35f) {
+        sw = stroke;
+    }
+    if (sw < 1.25f) {
+        sw = 1.25f;
+    }
+    return sw;
+}
+
+static void
+fill_circle(SoftDc *dc, float cx, float cy, float r, uint32_t rgb, int alpha)
+{
+    int x0 = (int)floorf(cx - r - 1.0f);
+    int y0 = (int)floorf(cy - r - 1.0f);
+    int x1 = (int)ceilf(cx + r + 1.0f);
+    int y1 = (int)ceilf(cy + r + 1.0f);
+    int y;
+    for (y = y0; y <= y1; y++) {
+        int x;
+        for (x = x0; x <= x1; x++) {
+            float d = sqrtf(((float)x + 0.5f - cx) * ((float)x + 0.5f - cx) +
+                ((float)y + 0.5f - cy) * ((float)y + 0.5f - cy));
+            float cover = clamp01(r + 0.5f - d);
+            if (cover > 0.0f) {
+                put(dc, x, y, rgb, (int)(alpha * cover + 0.5f));
+            }
+        }
+    }
+}
+
+static void
+stroke_circle(SoftDc *dc, float cx, float cy, float r, float width, uint32_t rgb, int alpha)
+{
+    int x0 = (int)floorf(cx - r - width - 1.0f);
+    int y0 = (int)floorf(cy - r - width - 1.0f);
+    int x1 = (int)ceilf(cx + r + width + 1.0f);
+    int y1 = (int)ceilf(cy + r + width + 1.0f);
+    int y;
+    for (y = y0; y <= y1; y++) {
+        int x;
+        for (x = x0; x <= x1; x++) {
+            float d = fabsf(sqrtf(((float)x + 0.5f - cx) * ((float)x + 0.5f - cx) +
+                ((float)y + 0.5f - cy) * ((float)y + 0.5f - cy)) - r) - width * 0.5f;
+            float cover = clamp01(0.5f - d);
+            if (cover > 0.0f) {
+                put(dc, x, y, rgb, (int)(alpha * cover + 0.5f));
+            }
+        }
+    }
+}
+
+static void
+fill_tri(
+    SoftDc *dc,
+    float x0,
+    float y0,
+    float x1,
+    float y1,
+    float x2,
+    float y2,
+    uint32_t rgb,
+    int alpha
+)
+{
+    float minx = x0;
+    float maxx = x0;
+    float miny = y0;
+    float maxy = y0;
+    float area;
+    int x;
+    int y;
+
+    if (x1 < minx) {
+        minx = x1;
+    }
+    if (x2 < minx) {
+        minx = x2;
+    }
+    if (x1 > maxx) {
+        maxx = x1;
+    }
+    if (x2 > maxx) {
+        maxx = x2;
+    }
+    if (y1 < miny) {
+        miny = y1;
+    }
+    if (y2 < miny) {
+        miny = y2;
+    }
+    if (y1 > maxy) {
+        maxy = y1;
+    }
+    if (y2 > maxy) {
+        maxy = y2;
+    }
+    area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+    if (fabsf(area) < 0.01f) {
+        return;
+    }
+    for (y = (int)floorf(miny) - 1; y <= (int)ceilf(maxy) + 1; y++) {
+        for (x = (int)floorf(minx) - 1; x <= (int)ceilf(maxx) + 1; x++) {
+            float px = (float)x + 0.5f;
+            float py = (float)y + 0.5f;
+            float w0 = ((x1 - px) * (y2 - py) - (x2 - px) * (y1 - py)) / area;
+            float w1 = ((x2 - px) * (y0 - py) - (x0 - px) * (y2 - py)) / area;
+            float w2 = 1.0f - w0 - w1;
+            float edge = w0 < w1 ? w0 : w1;
+            float cover;
+            if (w2 < edge) {
+                edge = w2;
+            }
+            cover = clamp01(0.5f + edge * sqrtf(fabsf(area)) * 0.15f);
+            if (w0 >= -0.15f && w1 >= -0.15f && w2 >= -0.15f && cover > 0.0f) {
+                put(dc, x, y, rgb, (int)(alpha * cover + 0.5f));
+            }
+        }
+    }
+}
+
 void
 icon_draw(void *hdc, IconId id, float cx, float cy, float size, uint32_t rgb, float stroke)
 {
     SoftDc *dc = as_dc(hdc);
+    IconXf xf;
     int a = g_icon_alpha;
-    if (!dc || size < 4.0f || a <= 0) {
+    float sw;
+    if (!dc || size < 1.0f || a <= 0) {
         return;
     }
-    float s = stroke > 0.1f ? stroke : size * (1.75f / 24.0f);
-    if (s < 1.0f) {
-        s = 1.0f;
+    if (id == ICON_STEAM) {
+        if (!draw_steam_svg(dc, cx, cy, size, rgb, a)) {
+            fill_circle(dc, cx, cy, size * 0.42f, rgb, a);
+        }
+        return;
     }
-    float h = size * 0.32f;
+    xf = icon_xf(cx, cy, size);
+    sw = icon_stroke(size, stroke);
     switch (id) {
     case ICON_X:
-        stroke_line(dc, cx - h, cy - h, cx + h, cy + h, s, rgb, a);
-        stroke_line(dc, cx + h, cy - h, cx - h, cy + h, s, rgb, a);
+        stroke_line(dc, ix(&xf, 6.0f), iy(&xf, 6.0f), ix(&xf, 18.0f), iy(&xf, 18.0f), sw, rgb, a);
+        stroke_line(dc, ix(&xf, 18.0f), iy(&xf, 6.0f), ix(&xf, 6.0f), iy(&xf, 18.0f), sw, rgb, a);
         break;
     case ICON_MINUS:
-        stroke_line(dc, cx - h, cy, cx + h, cy, s, rgb, a);
+        stroke_line(dc, ix(&xf, 5.0f), iy(&xf, 12.0f), ix(&xf, 19.0f), iy(&xf, 12.0f), sw, rgb, a);
         break;
-    case ICON_USER:
-        icon_round_rect(hdc, cx - h * 0.55f, cy - h * 1.05f, h * 1.1f, h * 1.1f, h * 0.55f, rgb, a);
-        icon_round_rect(hdc, cx - h, cy + h * 0.15f, h * 2.0f, h * 1.15f, h * 0.55f, rgb, a);
+    case ICON_SQUARE:
+        icon_round_stroke(hdc, ix(&xf, 6.0f), iy(&xf, 6.0f), 12.0f * xf.s, 12.0f * xf.s, 1.6f * xf.s, rgb, a, sw);
         break;
-    case ICON_LOG_IN:
-        stroke_line(dc, cx - h, cy - h, cx + h * 0.2f, cy - h, s, rgb, a);
-        stroke_line(dc, cx + h * 0.2f, cy - h, cx + h * 0.2f, cy + h, s, rgb, a);
-        stroke_line(dc, cx + h * 0.2f, cy + h, cx - h, cy + h, s, rgb, a);
-        stroke_line(dc, cx - h * 0.15f, cy, cx + h, cy, s, rgb, a);
-        break;
-    case ICON_STEAM:
-        icon_round_rect(hdc, cx - size * 0.42f, cy - size * 0.42f, size * 0.84f, size * 0.84f, size * 0.42f, rgb, a);
-        break;
-    case ICON_DOWNLOAD:
-        stroke_line(dc, cx, cy - h, cx, cy + h * 0.35f, s, rgb, a);
-        stroke_line(dc, cx - h * 0.55f, cy, cx, cy + h * 0.45f, s, rgb, a);
-        stroke_line(dc, cx + h * 0.55f, cy, cx, cy + h * 0.45f, s, rgb, a);
-        stroke_line(dc, cx - h * 0.85f, cy + h * 0.35f, cx - h * 0.85f, cy + h, s, rgb, a);
-        stroke_line(dc, cx - h * 0.85f, cy + h, cx + h * 0.85f, cy + h, s, rgb, a);
-        stroke_line(dc, cx + h * 0.85f, cy + h, cx + h * 0.85f, cy + h * 0.35f, s, rgb, a);
+    case ICON_GLOBE:
+        stroke_circle(dc, ix(&xf, 12.0f), iy(&xf, 12.0f), 8.0f * xf.s, sw, rgb, a);
+        stroke_circle(dc, ix(&xf, 12.0f), iy(&xf, 12.0f), 3.0f * xf.s, sw, rgb, a);
+        stroke_line(dc, ix(&xf, 4.0f), iy(&xf, 12.0f), ix(&xf, 20.0f), iy(&xf, 12.0f), sw, rgb, a);
         break;
     case ICON_SEARCH:
-        icon_round_rect(hdc, cx - h * 0.45f, cy - h * 0.55f, h * 0.9f, h * 0.9f, h * 0.45f, rgb, a);
-        stroke_line(dc, cx + h * 0.25f, cy + h * 0.25f, cx + h, cy + h, s, rgb, a);
+        stroke_circle(dc, ix(&xf, 10.25f), iy(&xf, 10.25f), 5.25f * xf.s, sw, rgb, a);
+        stroke_line(dc, ix(&xf, 14.8f), iy(&xf, 14.8f), ix(&xf, 19.5f), iy(&xf, 19.5f), sw, rgb, a);
         break;
     case ICON_SETTINGS:
-        icon_round_rect(hdc, cx - h * 0.32f, cy - h * 0.32f, h * 0.64f, h * 0.64f, h * 0.32f, rgb, a);
-        stroke_line(dc, cx, cy - h, cx, cy - h * 0.5f, s, rgb, a);
-        stroke_line(dc, cx, cy + h * 0.5f, cx, cy + h, s, rgb, a);
-        stroke_line(dc, cx - h, cy, cx - h * 0.5f, cy, s, rgb, a);
-        stroke_line(dc, cx + h * 0.5f, cy, cx + h, cy, s, rgb, a);
-        break;
-    case ICON_PLAY:
-        stroke_line(dc, cx - h * 0.45f, cy - h, cx + h * 0.75f, cy, s, rgb, a);
-        stroke_line(dc, cx + h * 0.75f, cy, cx - h * 0.45f, cy + h, s, rgb, a);
-        stroke_line(dc, cx - h * 0.45f, cy + h, cx - h * 0.45f, cy - h, s, rgb, a);
-        break;
-    case ICON_PAUSE:
-        icon_round_rect(hdc, cx - h * 0.55f, cy - h, h * 0.38f, h * 2.0f, h * 0.08f, rgb, a);
-        icon_round_rect(hdc, cx + h * 0.17f, cy - h, h * 0.38f, h * 2.0f, h * 0.08f, rgb, a);
-        break;
-    case ICON_CHEVRON_UP:
-        stroke_line(dc, cx - h * 0.9f, cy + h * 0.4f, cx, cy - h * 0.4f, s, rgb, a);
-        stroke_line(dc, cx + h * 0.9f, cy + h * 0.4f, cx, cy - h * 0.4f, s, rgb, a);
+        stroke_circle(dc, ix(&xf, 12.0f), iy(&xf, 12.0f), 2.8f * xf.s, sw, rgb, a);
+        stroke_circle(dc, ix(&xf, 12.0f), iy(&xf, 12.0f), 7.6f * xf.s, sw, rgb, a);
         break;
     case ICON_CHEVRON_DOWN:
-        stroke_line(dc, cx - h * 0.9f, cy - h * 0.4f, cx, cy + h * 0.4f, s, rgb, a);
-        stroke_line(dc, cx + h * 0.9f, cy - h * 0.4f, cx, cy + h * 0.4f, s, rgb, a);
+        stroke_line(dc, ix(&xf, 6.0f), iy(&xf, 9.0f), ix(&xf, 12.0f), iy(&xf, 15.0f), sw, rgb, a);
+        stroke_line(dc, ix(&xf, 12.0f), iy(&xf, 15.0f), ix(&xf, 18.0f), iy(&xf, 9.0f), sw, rgb, a);
+        break;
+    case ICON_CHEVRON_UP:
+        stroke_line(dc, ix(&xf, 6.0f), iy(&xf, 15.0f), ix(&xf, 12.0f), iy(&xf, 9.0f), sw, rgb, a);
+        stroke_line(dc, ix(&xf, 12.0f), iy(&xf, 9.0f), ix(&xf, 18.0f), iy(&xf, 15.0f), sw, rgb, a);
+        break;
+    case ICON_MENU:
+        stroke_line(dc, ix(&xf, 4.5f), iy(&xf, 8.0f), ix(&xf, 19.5f), iy(&xf, 8.0f), sw, rgb, a);
+        stroke_line(dc, ix(&xf, 4.5f), iy(&xf, 12.0f), ix(&xf, 19.5f), iy(&xf, 12.0f), sw, rgb, a);
+        stroke_line(dc, ix(&xf, 4.5f), iy(&xf, 16.0f), ix(&xf, 19.5f), iy(&xf, 16.0f), sw, rgb, a);
+        break;
+    case ICON_PLAY:
+        fill_tri(
+            dc,
+            ix(&xf, 7.0f),
+            iy(&xf, 4.5f),
+            ix(&xf, 19.5f),
+            iy(&xf, 12.0f),
+            ix(&xf, 7.0f),
+            iy(&xf, 19.5f),
+            rgb,
+            a
+        );
+        break;
+    case ICON_PAUSE:
+        icon_round_rect(hdc, ix(&xf, 6.0f), iy(&xf, 4.5f), 4.0f * xf.s, 15.0f * xf.s, 1.1f * xf.s, rgb, a);
+        icon_round_rect(hdc, ix(&xf, 14.0f), iy(&xf, 4.5f), 4.0f * xf.s, 15.0f * xf.s, 1.1f * xf.s, rgb, a);
+        break;
+    case ICON_USER: {
+        float hcx = ix(&xf, 12.0f);
+        float hcy = iy(&xf, 8.0f);
+        float bcx = ix(&xf, 12.0f);
+        float bcy = iy(&xf, 21.0f);
+        float br = 8.0f * xf.s;
+        int uy;
+        stroke_circle(dc, hcx, hcy, 4.0f * xf.s, sw, rgb, a);
+        for (uy = (int)floorf(bcy - br - sw - 1.0f); uy <= (int)ceilf(bcy + 1.0f); uy++) {
+            int ux;
+            for (ux = (int)floorf(bcx - br - sw - 1.0f); ux <= (int)ceilf(bcx + br + sw + 1.0f); ux++) {
+                float px = (float)ux + 0.5f;
+                float py = (float)uy + 0.5f;
+                float d;
+                float cover;
+                if (py > bcy + 0.6f) {
+                    continue;
+                }
+                d = fabsf(sqrtf((px - bcx) * (px - bcx) + (py - bcy) * (py - bcy)) - br) - sw * 0.5f;
+                cover = clamp01(0.5f - d);
+                if (cover > 0.0f) {
+                    put(dc, ux, uy, rgb, (int)(a * cover + 0.5f));
+                }
+            }
+        }
+        break;
+    }
+    case ICON_LOG_IN:
+        stroke_line(dc, ix(&xf, 10.0f), iy(&xf, 7.0f), ix(&xf, 15.0f), iy(&xf, 12.0f), sw, rgb, a);
+        stroke_line(dc, ix(&xf, 15.0f), iy(&xf, 12.0f), ix(&xf, 10.0f), iy(&xf, 17.0f), sw, rgb, a);
+        stroke_line(dc, ix(&xf, 3.0f), iy(&xf, 12.0f), ix(&xf, 15.0f), iy(&xf, 12.0f), sw, rgb, a);
+        stroke_line(dc, ix(&xf, 15.0f), iy(&xf, 3.0f), ix(&xf, 19.0f), iy(&xf, 3.0f), sw, rgb, a);
+        stroke_line(dc, ix(&xf, 21.0f), iy(&xf, 5.0f), ix(&xf, 21.0f), iy(&xf, 19.0f), sw, rgb, a);
+        stroke_line(dc, ix(&xf, 19.0f), iy(&xf, 21.0f), ix(&xf, 15.0f), iy(&xf, 21.0f), sw, rgb, a);
+        break;
+    case ICON_DOWNLOAD:
+        stroke_line(dc, ix(&xf, 12.0f), iy(&xf, 3.0f), ix(&xf, 12.0f), iy(&xf, 15.0f), sw, rgb, a);
+        stroke_line(dc, ix(&xf, 7.0f), iy(&xf, 10.0f), ix(&xf, 12.0f), iy(&xf, 15.0f), sw, rgb, a);
+        stroke_line(dc, ix(&xf, 12.0f), iy(&xf, 15.0f), ix(&xf, 17.0f), iy(&xf, 10.0f), sw, rgb, a);
+        stroke_line(dc, ix(&xf, 4.0f), iy(&xf, 15.0f), ix(&xf, 4.0f), iy(&xf, 19.0f), sw, rgb, a);
+        stroke_line(dc, ix(&xf, 4.0f), iy(&xf, 19.0f), ix(&xf, 20.0f), iy(&xf, 19.0f), sw, rgb, a);
+        stroke_line(dc, ix(&xf, 20.0f), iy(&xf, 19.0f), ix(&xf, 20.0f), iy(&xf, 15.0f), sw, rgb, a);
         break;
     default:
-        icon_round_rect(hdc, cx - h, cy - h, h * 2.0f, h * 2.0f, h * 0.25f, rgb, a);
+        icon_round_rect(hdc, cx - size * 0.2f, cy - size * 0.2f, size * 0.4f, size * 0.4f, size * 0.06f, rgb, a);
         break;
     }
 }
@@ -351,19 +720,26 @@ float
 icon_measure_label(void *hdc, const wchar_t *text, float px, int weight)
 {
     (void)hdc;
-    (void)weight;
     if (!text || !text[0] || px < 1.0f) {
         return 0.0f;
     }
-    int scale = (int)(px / 8.0f);
-    if (scale < 1) {
-        scale = 1;
+    if (has_inter()) {
+        float tw = app_font_measure_wide(text, px, weight);
+        if (tw > 0.0f) {
+            return tw;
+        }
     }
-    int n = 0;
-    while (text[n]) {
-        n++;
+    {
+        int scale = (int)(px / 8.0f);
+        int n = 0;
+        if (scale < 1) {
+            scale = 1;
+        }
+        while (text[n]) {
+            n++;
+        }
+        return (float)(n * SOFT_FONT_ADVANCE * scale);
     }
-    return (float)(n * SOFT_FONT_ADVANCE * scale);
 }
 
 void
@@ -380,22 +756,46 @@ icon_draw_label_alpha(
     int alpha
 )
 {
-    (void)weight;
     SoftDc *dc = as_dc(hdc);
     if (!dc || !text || w < 4.0f || h < 4.0f || alpha <= 0) {
         return;
     }
-    int scale = (int)(px / 8.0f);
-    if (scale < 1) {
-        scale = 1;
+    if (has_inter()) {
+        app_font_draw_wide(
+            plot_dc,
+            dc,
+            x,
+            y,
+            w,
+            h,
+            text,
+            px,
+            weight,
+            rgb,
+            alpha,
+            APP_FONT_ALIGN_LEFT
+        );
+        return;
     }
-    int glyph_w = SOFT_FONT_ADVANCE * scale;
-    int glyph_h = SOFT_FONT_ROWS * scale;
-    int max_chars = (int)(w / (float)glyph_w);
-    int cy = (int)(y + (h - (float)glyph_h) * 0.5f);
-    int cx = (int)x;
-    for (int i = 0; text[i] && i < max_chars; ++i) {
-        draw_char(dc, cx + i * glyph_w, cy, scale, text[i], rgb, alpha);
+    {
+        int scale = (int)(px / 8.0f);
+        int glyph_w;
+        int glyph_h;
+        int max_chars;
+        int cy;
+        int cx;
+        int i;
+        if (scale < 1) {
+            scale = 1;
+        }
+        glyph_w = SOFT_FONT_ADVANCE * scale;
+        glyph_h = SOFT_FONT_ROWS * scale;
+        max_chars = (int)(w / (float)glyph_w);
+        cy = (int)(y + (h - (float)glyph_h) * 0.5f);
+        cx = (int)x;
+        for (i = 0; text[i] && i < max_chars; ++i) {
+            draw_char(dc, cx + i * glyph_w, cy, scale, text[i], rgb, alpha);
+        }
     }
 }
 
@@ -413,21 +813,29 @@ icon_draw_label_end_alpha(
     int alpha
 )
 {
-    (void)weight;
     SoftDc *dc = as_dc(hdc);
+    float tw;
     if (!dc || !text || w < 4.0f || h < 4.0f || alpha <= 0) {
         return;
     }
-    int scale = (int)(px / 8.0f);
-    if (scale < 1) {
-        scale = 1;
+    if (has_inter()) {
+        app_font_draw_wide(
+            plot_dc,
+            dc,
+            x,
+            y,
+            w,
+            h,
+            text,
+            px,
+            weight,
+            rgb,
+            alpha,
+            APP_FONT_ALIGN_RIGHT
+        );
+        return;
     }
-    int glyph_w = SOFT_FONT_ADVANCE * scale;
-    int n = 0;
-    while (text[n]) {
-        n++;
-    }
-    float tw = (float)(n * glyph_w);
+    tw = icon_measure_label(hdc, text, px, weight);
     icon_draw_label_alpha(hdc, x + w - tw, y, tw > w ? w : tw, h, text, rgb, px, weight, alpha);
 }
 
@@ -460,22 +868,45 @@ icon_draw_label_full(
     int weight
 )
 {
-    SoftDc *dc = as_dc(hdc);
-    if (!dc || !text || h < 4.0f) {
+    if (has_inter()) {
+        app_font_draw_wide(
+            plot_dc,
+            as_dc(hdc),
+            x,
+            y,
+            w > 4.0f ? w : 4096.0f,
+            h,
+            text,
+            px,
+            weight,
+            rgb,
+            255,
+            APP_FONT_ALIGN_LEFT
+        );
         return;
     }
-    int scale = (int)(px / 8.0f);
-    if (scale < 1) {
-        scale = 1;
-    }
-    int glyph_w = SOFT_FONT_ADVANCE * scale;
-    int glyph_h = SOFT_FONT_ROWS * scale;
-    int cy = (int)(y + (h - (float)glyph_h) * 0.5f);
-    int cx = (int)x;
-    (void)w;
-    (void)weight;
-    for (int i = 0; text[i]; ++i) {
-        draw_char(dc, cx + i * glyph_w, cy, scale, text[i], rgb, 255);
+    {
+        SoftDc *dc = as_dc(hdc);
+        int scale = (int)(px / 8.0f);
+        int glyph_w;
+        int glyph_h;
+        int cy;
+        int cx;
+        int i;
+        if (!dc || !text || h < 4.0f) {
+            return;
+        }
+        if (scale < 1) {
+            scale = 1;
+        }
+        glyph_w = SOFT_FONT_ADVANCE * scale;
+        glyph_h = SOFT_FONT_ROWS * scale;
+        cy = (int)(y + (h - (float)glyph_h) * 0.5f);
+        cx = (int)x;
+        (void)w;
+        for (i = 0; text[i]; ++i) {
+            draw_char(dc, cx + i * glyph_w, cy, scale, text[i], rgb, 255);
+        }
     }
 }
 
@@ -493,21 +924,40 @@ icon_draw_label_center_alpha(
     int alpha
 )
 {
-    (void)weight;
     SoftDc *dc = as_dc(hdc);
     if (!dc || !text || alpha <= 0) {
         return;
     }
-    int scale = (int)(px / 8.0f);
-    if (scale < 1) {
-        scale = 1;
+    if (has_inter()) {
+        app_font_draw_wide(
+            plot_dc,
+            dc,
+            x,
+            y,
+            w,
+            h,
+            text,
+            px,
+            weight,
+            rgb,
+            alpha,
+            APP_FONT_ALIGN_CENTER
+        );
+        return;
     }
-    int n = 0;
-    while (text[n]) {
-        n++;
+    {
+        int scale = (int)(px / 8.0f);
+        int n = 0;
+        float tw;
+        if (scale < 1) {
+            scale = 1;
+        }
+        while (text[n]) {
+            n++;
+        }
+        tw = (float)(n * SOFT_FONT_ADVANCE * scale);
+        icon_draw_label_alpha(hdc, x + (w - tw) * 0.5f, y, w, h, text, rgb, px, weight, alpha);
     }
-    float tw = (float)(n * SOFT_FONT_ADVANCE * scale);
-    icon_draw_label_alpha(hdc, x + (w - tw) * 0.5f, y, w, h, text, rgb, px, weight, alpha);
 }
 
 void
@@ -528,6 +978,25 @@ icon_draw_label_shimmer(
 {
     SoftDc *dc = as_dc(hdc);
     if (!dc || !text || w < 4.0f || h < 4.0f || alpha <= 0) {
+        return;
+    }
+    if (has_inter()) {
+        (void)shine;
+        (void)phase;
+        app_font_draw_wide(
+            plot_dc,
+            dc,
+            x,
+            y,
+            w,
+            h,
+            text,
+            px,
+            weight,
+            rgb,
+            alpha,
+            APP_FONT_ALIGN_RIGHT
+        );
         return;
     }
     if (phase < 0.0f) {
@@ -584,21 +1053,7 @@ icon_draw_label_center(
     int weight
 )
 {
-    (void)weight;
-    SoftDc *dc = as_dc(hdc);
-    if (!dc || !text) {
-        return;
-    }
-    int scale = (int)(px / 8.0f);
-    if (scale < 1) {
-        scale = 1;
-    }
-    int n = 0;
-    while (text[n]) {
-        n++;
-    }
-    float tw = (float)(n * SOFT_FONT_ADVANCE * scale);
-    icon_draw_label(hdc, x + (w - tw) * 0.5f, y, w, h, text, rgb, px, weight);
+    icon_draw_label_center_alpha(hdc, x, y, w, h, text, rgb, px, weight, 255);
 }
 
 void

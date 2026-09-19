@@ -5,7 +5,9 @@
 #include "self_update.h"
 #include "steam_auth.h"
 #include "video_bg.h"
+#include "shared/app_font.h"
 #include "shared/draw.h"
+#include "shared/os.h"
 #include "shared/soft_font.h"
 
 static void platform_fill_rect_alpha(int x, int y, int w, int h, uint32_t color, int alpha);
@@ -183,12 +185,22 @@ platform_draw_text(int x, int y, const char *text, uint32_t color)
 }
 
 static void
+plot_window(void *user, int x, int y, uint32_t rgb, int alpha)
+{
+    (void)user;
+    put_pixel(x, y, rgb, alpha);
+}
+
+static void
 platform_measure_label(const char *text, int px, int weight, int *w, int *h, int *ascent)
 {
-    (void)weight;
-    int n = text ? (int)strlen(text) : 0;
+    float tw = app_font_measure_utf8(text, (float)px, weight);
+    if (tw <= 0.0f) {
+        int n = text ? (int)strlen(text) : 0;
+        tw = (float)(n * (px * SOFT_FONT_ADVANCE / SOFT_FONT_ROWS));
+    }
     if (w) {
-        *w = n * (px * SOFT_FONT_ADVANCE / SOFT_FONT_ROWS);
+        *w = (int)(tw + 0.5f);
     }
     if (h) {
         *h = px + 4;
@@ -228,17 +240,24 @@ draw_glyph(int x, int y, int scale, char ch, uint32_t color)
 static void
 platform_draw_label(int x, int y, const char *text, uint32_t color, int px, int weight, int tracking)
 {
-    (void)weight;
     if (!text) {
         return;
     }
-    int scale = px / 8;
-    if (scale < 1) {
-        scale = 1;
+    if (app_font_measure_utf8(text, (float)px, weight) > 0.0f) {
+        app_font_draw_utf8(plot_window, NULL, (float)x, (float)y, text, (float)px, weight, color, 255, tracking);
+        return;
     }
-    int advance = SOFT_FONT_ADVANCE * scale + (tracking > 0 ? tracking / 20 : 0);
-    for (int i = 0; text[i]; ++i) {
-        draw_glyph(x + i * advance, y, scale, text[i], color);
+    {
+        int scale = px / 8;
+        int advance;
+        int i;
+        if (scale < 1) {
+            scale = 1;
+        }
+        advance = SOFT_FONT_ADVANCE * scale + (tracking > 0 ? tracking / 20 : 0);
+        for (i = 0; text[i]; ++i) {
+            draw_glyph(x + i * advance, y, scale, text[i], color);
+        }
     }
 }
 
@@ -270,14 +289,143 @@ platform_log(const char *msg)
     debug_log("%s", msg ? msg : "");
 }
 
+static float
+clamp_dpi_scale(float scale)
+{
+    if (scale < 0.75f) {
+        return 0.0f;
+    }
+    if (scale > 3.0f) {
+        return 3.0f;
+    }
+    return scale;
+}
+
+static float
+env_dpi_scale(const char *name)
+{
+    const char *text;
+    char *end = NULL;
+    float scale;
+
+    text = getenv(name);
+    if (!text || !text[0]) {
+        return 0.0f;
+    }
+    scale = strtof(text, &end);
+    if (end == text) {
+        return 0.0f;
+    }
+    return clamp_dpi_scale(scale);
+}
+
+static float
+xft_dpi_scale(Display *dpy)
+{
+    char *res;
+    const char *p;
+    char *end = NULL;
+    float dpi;
+
+    if (!dpy) {
+        return 0.0f;
+    }
+    res = XResourceManagerString(dpy);
+    if (!res) {
+        return 0.0f;
+    }
+    p = strstr(res, "Xft.dpi");
+    if (!p) {
+        return 0.0f;
+    }
+    p += 7;
+    while (*p == ' ' || *p == '\t' || *p == ':') {
+        p++;
+    }
+    dpi = strtof(p, &end);
+    if (end == p || dpi < 72.0f || dpi > 384.0f) {
+        return 0.0f;
+    }
+    return clamp_dpi_scale(dpi / 96.0f);
+}
+
+static float
+wsl_host_scale(void)
+{
+    FILE *pipe;
+    char line[256];
+    float scale = 0.0f;
+
+    if (!getenv("WSL_DISTRO_NAME") && !getenv("WSL_INTEROP")) {
+        return 0.0f;
+    }
+    pipe = popen(
+        "/mnt/c/Windows/System32/reg.exe query \"HKCU\\Control Panel\\Desktop\" /v LogPixels 2>/dev/null",
+        "r"
+    );
+    if (!pipe) {
+        return 0.0f;
+    }
+    while (fgets(line, (int)sizeof(line), pipe)) {
+        const char *hex = strstr(line, "0x");
+        unsigned value;
+
+        if (!hex) {
+            continue;
+        }
+        value = (unsigned)strtoul(hex, NULL, 16);
+        if (value >= 96 && value <= 288) {
+            scale = clamp_dpi_scale((float)value / 96.0f);
+            break;
+        }
+    }
+    pclose(pipe);
+    return scale;
+}
+
+static float
+linux_dpi_scale(Display *dpy)
+{
+    float scale;
+
+    scale = env_dpi_scale("DAWN_SCALE");
+    if (scale > 0.0f) {
+        return scale;
+    }
+    scale = env_dpi_scale("GDK_SCALE");
+    if (scale > 0.0f) {
+        return scale;
+    }
+    scale = env_dpi_scale("QT_SCALE_FACTOR");
+    if (scale > 0.0f) {
+        return scale;
+    }
+    scale = xft_dpi_scale(dpy);
+    if (scale > 0.0f) {
+        return scale;
+    }
+    scale = wsl_host_scale();
+    if (scale > 0.0f) {
+        return scale;
+    }
+    return 1.0f;
+}
+
 int
 window_create(HostWindow *window, const char *title, int width, int height)
 {
+    float dpi;
     memset(window, 0, sizeof(*window));
     Display *dpy = XOpenDisplay(NULL);
     if (!dpy) {
         return 0;
     }
+    dpi = linux_dpi_scale(dpy);
+    if (dpi < 0.75f) {
+        dpi = 1.0f;
+    }
+    width = (int)(width * dpi + 0.5f);
+    height = (int)(height * dpi + 0.5f);
     int screen = DefaultScreen(dpy);
     Window root = RootWindow(dpy, screen);
     unsigned long black = BlackPixel(dpy, screen);
@@ -292,8 +440,8 @@ window_create(HostWindow *window, const char *title, int width, int height)
     window->xwindow = (unsigned long)win;
     window->width = width;
     window->height = height;
-    window->dpi_scale = 1.0f;
-    window->corner_radius = 16.0f;
+    window->dpi_scale = dpi;
+    window->corner_radius = 16.0f * dpi;
     window->running = 1;
     window->ready = 1;
     window->pixels = (uint32_t *)calloc((size_t)width * (size_t)height, sizeof(uint32_t));
@@ -320,6 +468,11 @@ window_create(HostWindow *window, const char *title, int width, int height)
     window->ximage = image;
     window->gc = XCreateGC(dpy, win, 0, NULL);
     g_window = window;
+    {
+        char root[MAX_PATH];
+        os_app_root(root, sizeof(root), NULL);
+        app_font_set_root(root);
+    }
     return 1;
 }
 

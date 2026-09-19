@@ -12,11 +12,9 @@ fi
 
 if [ "$KIND" = "official" ]; then
     cat > "$OUT" <<EOF
-Downloads can be paused and resumed instead of cancelled. Cancel stays in the menu.
+Linux uses the same official Steam mark and Inter font files as Windows. SVGs go through LunaSVG instead of the old software fallback.
 
-The account menu has **Copy ID** for a stable local Usr ID.
-
-Linux text used placeholder P/O glyphs. This still needs a Linux test.
+WSL can build and open the Linux UI on the desktop with \`dev-wsl.ps1\` or \`build-wsl.sh --run\`.
 EOF
 else
     cat > "$OUT" <<EOF

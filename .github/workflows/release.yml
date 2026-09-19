@@ -154,3 +154,24 @@ jobs:
           prerelease: ${{ needs.version.outputs.kind != 'official' }}
           make_latest: ${{ needs.version.outputs.kind == 'official' }}
           fail_on_unmatched_files: true
+
+  discord:
+    name: Discord
+    if: github.ref_type == 'tag'
+    needs: [version, release]
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      APP_VERSION: ${{ needs.version.outputs.version }}
+      RELEASE_TITLE: ${{ needs.version.outputs.title }}
+    steps:
+      - name: Announce release
+        run: |
+          if [ -z "${DISCORD_WEBHOOK:-}" ]; then
+            echo "DISCORD_WEBHOOK secret is missing; GitHub release is published, Discord skip."
+            exit 0
+          fi
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${APP_VERSION}"
+          body=$(printf '%s\n%s\n%s' "**${RELEASE_TITLE}**" "Windows + Linux packages:" "$url")
+          payload=$(jq -n --arg content "$body" '{content:$content}')
+          curl -fsSL -H 'Content-Type: application/json' -d "$payload" "$DISCORD_WEBHOOK"

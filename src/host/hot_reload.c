@@ -174,7 +174,14 @@ hot_reload_swap(void)
         next = os_load_lib(dest);
     }
     if (!next) {
+#ifdef _WIN32
         set_error("could not load app_logic");
+#else
+        {
+            const char *err = dlerror();
+            snprintf(g_error, sizeof(g_error), "could not load app_logic: %s", err ? err : "unknown");
+        }
+#endif
         g_generation -= 1;
         return 0;
     }

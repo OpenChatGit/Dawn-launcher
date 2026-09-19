@@ -67,6 +67,24 @@ cmake --build build --target host --target app_logic
 
 Linux needs CMake, Ninja, g++, X11, zlib, and libcurl.
 
+On Windows 11 with Ubuntu WSL, build and open the Linux UI on your desktop (WSLg):
+
+```
+.\scripts\dev-wsl.ps1
+```
+
+Or inside Ubuntu:
+
+```
+./scripts/build-wsl.sh --run
+```
+
+If Steam HTTP is missing in WSL:
+
+```
+sudo apt install -y libcurl4-openssl-dev
+```
+
 Pushing `main` publishes a rolling latest build. A `v*` tag publishes a fixed official release.
 
 ## Known limits

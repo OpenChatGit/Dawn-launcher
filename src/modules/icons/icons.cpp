@@ -1,4 +1,6 @@
 #include "shared/icons.h"
+#include "shared/app_font.h"
+#include "shared/os.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -18,23 +20,64 @@ using namespace Gdiplus;
 static ULONG_PTR g_token;
 static int g_started;
 static int g_icon_alpha = 255;
+static PrivateFontCollection *g_faces;
 static FontFamily *g_family;
 static Font *g_font;
 static float g_font_px;
 static int g_font_weight;
 
+static FontFamily *
+inter_family(void)
+{
+    if (g_family) {
+        return g_family;
+    }
+    g_faces = new PrivateFontCollection();
+    {
+        char path[MAX_PATH];
+        wchar_t wide[MAX_PATH];
+        if (app_font_file(path, sizeof(path), 0) && os_utf8_to_wide(path, wide, MAX_PATH) > 0) {
+            g_faces->AddFontFile(wide);
+        }
+        if (app_font_file(path, sizeof(path), 1) && os_utf8_to_wide(path, wide, MAX_PATH) > 0) {
+            g_faces->AddFontFile(wide);
+        }
+    }
+    g_family = new FontFamily(L"Inter", g_faces);
+    if (g_family->GetLastStatus() != Ok) {
+        delete g_family;
+        g_family = NULL;
+        INT count = g_faces->GetFamilyCount();
+        if (count > 0) {
+            FontFamily *list = new FontFamily[count];
+            INT found = 0;
+            g_faces->GetFamilies(count, list, &found);
+            if (found > 0) {
+                g_family = list[0].Clone();
+            }
+            delete[] list;
+        }
+    }
+    if (!g_family || g_family->GetLastStatus() != Ok) {
+        delete g_family;
+        g_family = new FontFamily(L"Segoe UI");
+    }
+    return g_family;
+}
+
 static Font *
 cached_font(float px, int weight)
 {
     INT style = weight >= 600 ? FontStyleBold : FontStyleRegular;
-    if (!g_family) {
-        g_family = new FontFamily(L"Segoe UI");
+    FontFamily *family = inter_family();
+    if (!family) {
+        return NULL;
     }
     if (g_font && g_font_px == px && g_font_weight == weight) {
         return g_font;
     }
     delete g_font;
-    g_font = new Font(g_family, px, style, UnitPixel);
+    g_font = new Font(family, px, style, UnitPixel);
     g_font_px = px;
     g_font_weight = weight;
     return g_font;
@@ -251,6 +294,13 @@ void
 icon_set_root(const char *project_root)
 {
     snprintf(g_root, sizeof(g_root), "%s", project_root ? project_root : ".");
+    app_font_set_root(g_root);
+    delete g_font;
+    g_font = NULL;
+    delete g_family;
+    g_family = NULL;
+    delete g_faces;
+    g_faces = NULL;
     if (g_steam_mask) {
         delete g_steam_mask;
         g_steam_mask = NULL;

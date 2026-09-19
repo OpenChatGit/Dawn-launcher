@@ -6,6 +6,7 @@
 #include "steam_auth.h"
 #include "video_bg.h"
 
+#include "shared/app_font.h"
 #include "shared/chrome.h"
 #include "shared/os.h"
 
@@ -596,8 +597,15 @@ cached_font(int px, int weight)
     HFONT font = CreateFontW(
         -px, 0, 0, 0, weight, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Inter"
     );
+    if (!font) {
+        font = CreateFontW(
+            -px, 0, 0, 0, weight, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"
+        );
+    }
     if (!font) {
         return (HFONT)GetStockObject(DEFAULT_GUI_FONT);
     }
@@ -787,11 +795,24 @@ window_create(HostWindow *window, const char *title, int width, int height)
     window->back_dc = CreateCompatibleDC(window->hdc);
     ensure_backbuffer(window, width, height);
 
+    {
+        char root[MAX_PATH];
+        os_app_root(root, sizeof(root), NULL);
+        app_font_set_root(root);
+        app_font_register();
+    }
     window->font = CreateFontW(
         -13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Inter"
     );
+    if (!window->font) {
+        window->font = CreateFontW(
+            -13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"
+        );
+    }
     window->old_font = SelectObject(window->back_dc, window->font);
     window->ready = 1;
     window_apply_round(window);

@@ -39,6 +39,7 @@ set(APP_LOGIC_SRC
     src/modules/theme/theme_ui.c
     src/shared/os.c
     src/shared/user_id.c
+    src/shared/app_font.c
 )
 
 set(HOST_SRC
@@ -52,6 +53,7 @@ set(HOST_SRC
     src/host/steam_auth.cpp
     src/shared/os.c
     src/shared/user_id.c
+    src/shared/app_font.c
 )
 
 if(WIN32)
@@ -69,6 +71,7 @@ else()
     list(APPEND APP_LOGIC_SRC
         src/modules/icons/icons_soft.cpp
         src/modules/theme/theme_render_soft.cpp
+        src/shared/svg_rast.cpp
         src/shared/soft_font.c
     )
     list(APPEND HOST_SRC
@@ -148,12 +151,25 @@ else()
     find_package(X11 REQUIRED)
     find_package(CURL)
     find_package(Threads REQUIRED)
+    include(FetchContent)
+    set(LUNASVG_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(LUNASVG_DISABLE_LOAD_SYSTEM_FONTS ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(lunasvg
+        GIT_REPOSITORY https://github.com/sammycage/lunasvg.git
+        GIT_TAG v3.4.0
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(lunasvg)
+    set_target_properties(lunasvg PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    if(TARGET plutovg)
+        set_target_properties(plutovg PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    endif()
     target_link_libraries(host PRIVATE X11::X11 Threads::Threads ${CMAKE_DL_LIBS} m)
     if(CURL_FOUND)
         target_link_libraries(host PRIVATE CURL::libcurl)
         target_compile_definitions(host PRIVATE APP_HAVE_CURL)
     endif()
-    target_link_libraries(app_logic PRIVATE m)
+    target_link_libraries(app_logic PRIVATE m lunasvg::lunasvg)
     target_compile_options(host PRIVATE -pthread)
     target_compile_options(app_logic PRIVATE -fPIC)
     set_target_properties(host PROPERTIES OUTPUT_NAME "host")
