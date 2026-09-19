@@ -12,13 +12,11 @@ fi
 
 if [ "$KIND" = "official" ]; then
     cat > "$OUT" <<EOF
-**New Version** in the titlebar when a newer official build is available. Dev builds still show the control so it can be tested.
+Downloads can be paused and resumed instead of cancelled. Cancel stays in the menu.
 
-Steam password is kept only until the Destiny 2 depot download finishes, then deleted. DepotDownloader sign-in appears only when an install is still needed; otherwise you just use Steam sign-in.
+The account menu has **Copy ID** for a stable local Usr ID.
 
-Steam OpenID now says **Sign in to Dawn**. The browser callback is a Dawn page with the emblem.
-
-Hover and tooltip for the update control stay compact: icon plus **New Version**, version pill to the left, no fade-out.
+Linux text used placeholder P/O glyphs. This still needs a Linux test.
 EOF
 else
     cat > "$OUT" <<EOF
