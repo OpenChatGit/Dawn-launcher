@@ -4098,51 +4098,43 @@ write_launch_scripts(const char *dir)
     }
 #else
     if (os_join(path, sizeof(path), dir, "launch-destiny.sh")) {
-        file = fopen(path, "wb");
-        if (file) {
-            fputs(
-                "#!/usr/bin/env sh\n"
-                "set -e\n"
-                "GAME_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n"
-                "cd \"$GAME_DIR\"\n"
-                "export DAWN_FOREST_BASELINE=1\n"
-                "unset SteamAppId SteamGameId SteamOverlayGameId\n"
-                "if command -v steam-run >/dev/null 2>&1; then RUNNER=steam-run; else RUNNER=; fi\n"
-                "for root in \\\n"
-                "  \"$HOME/.local/share/Steam\" \\\n"
-                "  \"$HOME/.steam/steam\" \\\n"
-                "  \"$HOME/.steam/root\" \\\n"
-                "  \"$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam\"; do\n"
-                "  [ -d \"$root/steamapps/common\" ] || continue\n"
-                "  for cand in \\\n"
-                "    \"$root/steamapps/common/Proton - Experimental/proton\" \\\n"
-                "    \"$root/steamapps/common/Proton 10.0/proton\" \\\n"
-                "    \"$root/steamapps/common/Proton 9.0/proton\" \\\n"
-                "    \"$root/steamapps/common/Proton 8.0/proton\"; do\n"
-                "    if [ -f \"$cand\" ]; then\n"
-                "      export STEAM_COMPAT_CLIENT_INSTALL_PATH=\"$root\"\n"
-                "      export STEAM_COMPAT_DATA_PATH=\"$root/steamapps/compatdata/1085660\"\n"
-                "      mkdir -p \"$STEAM_COMPAT_DATA_PATH\"\n"
-                "      if [ -n \"$RUNNER\" ]; then exec $RUNNER \"$cand\" run \"$GAME_DIR/destiny2.exe\" \"$@\"; fi\n"
-                "      exec \"$cand\" run \"$GAME_DIR/destiny2.exe\" \"$@\"\n"
-                "    fi\n"
-                "  done\n"
-                "done\n"
-                "if command -v wine64 >/dev/null 2>&1; then\n"
-                "  if [ -n \"$RUNNER\" ]; then exec $RUNNER wine64 \"$GAME_DIR/destiny2.exe\" \"$@\"; fi\n"
-                "  exec wine64 \"$GAME_DIR/destiny2.exe\" \"$@\"\n"
-                "fi\n"
-                "if command -v wine >/dev/null 2>&1; then\n"
-                "  if [ -n \"$RUNNER\" ]; then exec $RUNNER wine \"$GAME_DIR/destiny2.exe\" \"$@\"; fi\n"
-                "  exec wine \"$GAME_DIR/destiny2.exe\" \"$@\"\n"
-                "fi\n"
-                "echo \"[ERROR] Neither Proton nor Wine was found.\"\n"
-                "exit 1\n",
-                file
-            );
-            fclose(file);
-            chmod(path, 0755);
+        char scripts[MAX_PATH];
+        char src[MAX_PATH];
+        int copied = 0;
+
+        if (g_root[0] &&
+            os_join(scripts, sizeof(scripts), g_root, "scripts") &&
+            os_join(src, sizeof(src), scripts, "launch-destiny.sh") &&
+            file_exists(src) &&
+            os_copy_file(src, path)) {
+            copied = 1;
         }
+        if (!copied) {
+            file = fopen(path, "wb");
+            if (file) {
+                fputs(
+                    "#!/usr/bin/env sh\n"
+                    "set -e\n"
+                    "GAME_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n"
+                    "cd \"$GAME_DIR\"\n"
+                    "export DAWN_FOREST_BASELINE=1\n"
+                    "unset SteamAppId SteamGameId SteamOverlayGameId\n"
+                    "DATA_HOME=\"${XDG_DATA_HOME:-$HOME/.local/share}\"\n"
+                    "export WINEPREFIX=\"${DAWN_WINEPREFIX:-$DATA_HOME/Dawn/wineprefix}\"\n"
+                    "mkdir -p \"$WINEPREFIX\"\n"
+                    "if [ -n \"$DAWN_WINE\" ] && [ -x \"$DAWN_WINE\" ]; then\n"
+                    "  exec \"$DAWN_WINE\" \"$GAME_DIR/destiny2.exe\" \"$@\"\n"
+                    "fi\n"
+                    "if command -v wine64 >/dev/null 2>&1; then exec wine64 \"$GAME_DIR/destiny2.exe\" \"$@\"; fi\n"
+                    "if command -v wine >/dev/null 2>&1; then exec wine \"$GAME_DIR/destiny2.exe\" \"$@\"; fi\n"
+                    "echo \"[ERROR] Wine was not found.\"\n"
+                    "exit 1\n",
+                    file
+                );
+                fclose(file);
+            }
+        }
+        chmod(path, 0755);
     }
 #endif
 }

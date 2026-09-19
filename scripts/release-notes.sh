@@ -12,9 +12,11 @@ fi
 
 if [ "$KIND" = "official" ]; then
     cat > "$OUT" <<EOF
-Settings now uses a sidebar (User, General, Installation). Windows UI text uses Segoe UI with GDI ClearType, and the window follows per-monitor DPI.
+Linux Play now prefers Lutris wine-tkg (11.9) plus DXVK 2.6.2 instead of system Wine without Vulkan. That was why the game rendered wrong.
 
-Linux still uses IBM Plex and the same Install, Play, and uninstall flows as Windows.
+The launcher uses its own WINEPREFIX under Dawn and runs wineboot first, so \`%AppData%\` is a real path. steam-run is no longer wrapping Wine (that emptied AppData even when a manual \`wine\` command worked).
+
+Proton stays as a fallback with a Dawn compat path, not Steam compatdata 1085660.
 EOF
 else
     cat > "$OUT" <<EOF

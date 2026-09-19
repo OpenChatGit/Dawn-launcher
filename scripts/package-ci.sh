@@ -66,6 +66,11 @@ if [ -f "$ROOT/packaging/Dawn" ] && [ "$PLATFORM" = "linux" ]; then
     cp "$ROOT/packaging/Dawn" "$STAGE/Dawn.sh"
     chmod +x "$STAGE/Dawn.sh"
 fi
+if [ "$PLATFORM" = "linux" ] && [ -f "$ROOT/scripts/launch-destiny.sh" ]; then
+    mkdir -p "$STAGE/scripts"
+    cp "$ROOT/scripts/launch-destiny.sh" "$STAGE/scripts/launch-destiny.sh"
+    chmod +x "$STAGE/scripts/launch-destiny.sh"
+fi
 
 DD_ZIP="$DIST/depotdownloader.zip"
 mkdir -p "$DIST"
