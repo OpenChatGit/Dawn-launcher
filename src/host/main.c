@@ -54,6 +54,7 @@ WinMain(HINSTANCE instance, HINSTANCE prev, LPSTR cmd, int show)
         return steam_auth_install_openid_host() ? 0 : 1;
     }
 
+    window_enable_dpi_awareness();
     FreeConsole();
     debug_console_init();
     debug_log("Dawn %s", APP_VERSION);

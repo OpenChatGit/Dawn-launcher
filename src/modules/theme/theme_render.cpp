@@ -427,7 +427,7 @@ gpu_init(void)
     }
     g_dc->SetDpi(96.0f, 96.0f);
     g_dc->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    g_dc->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
+    g_dc->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 
     D2D1_STROKE_STYLE_PROPERTIES stroke = StrokeStyleProperties(
         D2D1_CAP_STYLE_ROUND,

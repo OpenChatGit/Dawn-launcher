@@ -12,9 +12,9 @@ fi
 
 if [ "$KIND" = "official" ]; then
     cat > "$OUT" <<EOF
-Linux now matches Windows for Install, Play, Stop, and uninstall (Dawn only, Sunrise only, or full). The Linux build installs missing packages, draws the Steam avatar, and asks for the depot password once.
+Settings now uses a sidebar (User, General, Installation). Windows UI text uses Segoe UI with GDI ClearType, and the window follows per-monitor DPI.
 
-WSL can build and open the Linux UI on the desktop with \`dev-wsl.ps1\` or \`build-wsl.sh --run\`.
+Linux still uses IBM Plex and the same Install, Play, and uninstall flows as Windows.
 EOF
 else
     cat > "$OUT" <<EOF

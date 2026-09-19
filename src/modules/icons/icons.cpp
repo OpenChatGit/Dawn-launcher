@@ -20,67 +20,187 @@ using namespace Gdiplus;
 static ULONG_PTR g_token;
 static int g_started;
 static int g_icon_alpha = 255;
-static PrivateFontCollection *g_faces;
-static FontFamily *g_family;
-static Font *g_font;
-static float g_font_px;
-static int g_font_weight;
+static HFONT g_hfont;
+static float g_hfont_px;
+static int g_hfont_weight;
 
-static FontFamily *
-inter_family(void)
+static float
+snap_px(float v)
 {
-    if (g_family) {
-        return g_family;
+    if (v < 1.0f) {
+        return 1.0f;
     }
-    g_faces = new PrivateFontCollection();
-    {
-        char path[MAX_PATH];
-        wchar_t wide[MAX_PATH];
-        if (app_font_file(path, sizeof(path), 0) && os_utf8_to_wide(path, wide, MAX_PATH) > 0) {
-            g_faces->AddFontFile(wide);
-        }
-        if (app_font_file(path, sizeof(path), 1) && os_utf8_to_wide(path, wide, MAX_PATH) > 0) {
-            g_faces->AddFontFile(wide);
-        }
-    }
-    g_family = new FontFamily(L"IBM Plex Sans", g_faces);
-    if (g_family->GetLastStatus() != Ok) {
-        delete g_family;
-        g_family = NULL;
-        INT count = g_faces->GetFamilyCount();
-        if (count > 0) {
-            FontFamily *list = new FontFamily[count];
-            INT found = 0;
-            g_faces->GetFamilies(count, list, &found);
-            if (found > 0) {
-                g_family = list[0].Clone();
-            }
-            delete[] list;
-        }
-    }
-    if (!g_family || g_family->GetLastStatus() != Ok) {
-        delete g_family;
-        g_family = new FontFamily(L"Segoe UI");
-    }
-    return g_family;
+    return floorf(v + 0.5f);
 }
 
-static Font *
-cached_font(float px, int weight)
+static void
+hdc_reset_gdi(HDC hdc)
 {
-    INT style = weight >= 600 ? FontStyleBold : FontStyleRegular;
-    FontFamily *family = inter_family();
-    if (!family) {
-        return NULL;
+    XFORM identity;
+
+    if (!hdc) {
+        return;
     }
-    if (g_font && g_font_px == px && g_font_weight == weight) {
-        return g_font;
+    SetGraphicsMode(hdc, GM_ADVANCED);
+    identity.eM11 = 1.0f;
+    identity.eM12 = 0.0f;
+    identity.eM21 = 0.0f;
+    identity.eM22 = 1.0f;
+    identity.eDx = 0.0f;
+    identity.eDy = 0.0f;
+    SetWorldTransform(hdc, &identity);
+    SetGraphicsMode(hdc, GM_COMPATIBLE);
+    SetMapMode(hdc, MM_TEXT);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextAlign(hdc, TA_LEFT | TA_TOP);
+}
+
+static int
+hdc_lock(HDC hdc)
+{
+    return hdc ? SaveDC(hdc) : 0;
+}
+
+static void
+hdc_unlock(HDC hdc, int saved)
+{
+    if (hdc && saved) {
+        RestoreDC(hdc, saved);
     }
-    delete g_font;
-    g_font = new Font(family, px, style, UnitPixel);
-    g_font_px = px;
-    g_font_weight = weight;
-    return g_font;
+    hdc_reset_gdi(hdc);
+}
+
+static HFONT
+cached_hfont(float px, int weight)
+{
+    int h;
+    int fw;
+
+    px = snap_px(px);
+    h = -(int)px;
+    fw = weight >= 600 ? FW_SEMIBOLD : FW_NORMAL;
+    if (g_hfont && g_hfont_px == px && g_hfont_weight == weight) {
+        return g_hfont;
+    }
+    if (g_hfont) {
+        DeleteObject(g_hfont);
+        g_hfont = NULL;
+    }
+    /* Segoe UI is hinted for GDI/ClearType. IBM Plex looks washed at 12–15px. */
+    g_hfont = CreateFontW(
+        h,
+        0,
+        0,
+        0,
+        fw,
+        FALSE,
+        FALSE,
+        FALSE,
+        DEFAULT_CHARSET,
+        OUT_TT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        VARIABLE_PITCH | FF_SWISS,
+        weight >= 600 ? L"Segoe UI Semibold" : L"Segoe UI"
+    );
+    if (!g_hfont) {
+        g_hfont = CreateFontW(
+            h,
+            0,
+            0,
+            0,
+            fw,
+            FALSE,
+            FALSE,
+            FALSE,
+            DEFAULT_CHARSET,
+            OUT_TT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            VARIABLE_PITCH | FF_SWISS,
+            L"Segoe UI"
+        );
+    }
+    g_hfont_px = px;
+    g_hfont_weight = weight;
+    return g_hfont;
+}
+
+static UINT
+gdi_align(StringAlignment align)
+{
+    if (align == StringAlignmentCenter) {
+        return DT_CENTER;
+    }
+    if (align == StringAlignmentFar) {
+        return DT_RIGHT;
+    }
+    return DT_LEFT;
+}
+
+static int
+gdi_draw_label(
+    HDC hdc,
+    int x,
+    int y,
+    int w,
+    int h,
+    const wchar_t *text,
+    uint32_t rgb,
+    float px,
+    int weight,
+    StringAlignment align,
+    int ellipsize
+)
+{
+    HFONT font = cached_hfont(px, weight);
+    TEXTMETRIC tm;
+    SIZE sz;
+    RECT rc;
+    HGDIOBJ old;
+    int saved;
+    int len;
+    int tx;
+    int ty;
+
+    if (!hdc || !font || !text || w < 1 || h < 1) {
+        return 0;
+    }
+    saved = hdc_lock(hdc);
+    hdc_reset_gdi(hdc);
+    old = SelectObject(hdc, font);
+    SetTextColor(hdc, RGB((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff));
+    GetTextMetrics(hdc, &tm);
+    len = (int)wcslen(text);
+    GetTextExtentPoint32W(hdc, text, len, &sz);
+    tx = x;
+    if (align == StringAlignmentCenter) {
+        tx = x + (w - sz.cx) / 2;
+    } else if (align == StringAlignmentFar) {
+        tx = x + w - sz.cx;
+    }
+    ty = y + (h - tm.tmHeight) / 2;
+    rc.left = x;
+    rc.top = y;
+    rc.right = x + w;
+    rc.bottom = y + h;
+    if (ellipsize) {
+        RECT line = rc;
+        line.top = ty;
+        line.bottom = ty + tm.tmHeight;
+        DrawTextW(
+            hdc,
+            text,
+            len,
+            &line,
+            DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS | gdi_align(align)
+        );
+    } else {
+        ExtTextOutW(hdc, tx, ty, ETO_CLIPPED, &rc, text, len, NULL);
+    }
+    SelectObject(hdc, old);
+    hdc_unlock(hdc, saved);
+    return 1;
 }
 
 void
@@ -295,12 +415,6 @@ icon_set_root(const char *project_root)
 {
     snprintf(g_root, sizeof(g_root), "%s", project_root ? project_root : ".");
     app_font_set_root(g_root);
-    delete g_font;
-    g_font = NULL;
-    delete g_family;
-    g_family = NULL;
-    delete g_faces;
-    g_faces = NULL;
     if (g_steam_mask) {
         delete g_steam_mask;
         g_steam_mask = NULL;
@@ -775,6 +889,8 @@ icon_draw(void *hdc, IconId id, float cx, float cy, float size, uint32_t rgb, fl
         return;
     }
     ensure_gdiplus();
+    int saved = hdc_lock((HDC)hdc);
+    {
     Graphics g((HDC)hdc);
     g.SetPageUnit(UnitPixel);
     g.SetSmoothingMode(SmoothingModeAntiAlias);
@@ -784,12 +900,8 @@ icon_draw(void *hdc, IconId id, float cx, float cy, float size, uint32_t rgb, fl
 
     if (id == ICON_STEAM) {
         draw_steam(&g, cx, cy, size, rgb);
-        return;
-    }
-    if ((id == ICON_DOWNLOAD || id == ICON_PLAY) && draw_lucide(&g, id, cx, cy, size, rgb)) {
-        return;
-    }
-
+    } else if ((id == ICON_DOWNLOAD || id == ICON_PLAY) && draw_lucide(&g, id, cx, cy, size, rgb)) {
+    } else {
     GraphicsPath path;
     build_icon(&path, id);
 
@@ -835,6 +947,9 @@ icon_draw(void *hdc, IconId id, float cx, float cy, float size, uint32_t rgb, fl
     } else {
         stroke_path(&g, &path, rgb, sw);
     }
+    }
+    }
+    hdc_unlock((HDC)hdc, saved);
 }
 
 void
@@ -893,12 +1008,16 @@ icon_fill_rect(void *hdc, float x, float y, float w, float h, uint32_t rgb, int 
     }
 
     ensure_gdiplus();
-    Graphics graphics((HDC)hdc);
-    graphics.SetSmoothingMode(SmoothingModeNone);
-    graphics.SetCompositingQuality(CompositingQualityHighSpeed);
-    graphics.SetPixelOffsetMode(PixelOffsetModeNone);
-    SolidBrush brush(argb(rgb, alpha));
-    graphics.FillRectangle(&brush, (INT)x, (INT)y, (INT)(w + 0.5f), (INT)(h + 0.5f));
+    int saved = hdc_lock((HDC)hdc);
+    {
+        Graphics graphics((HDC)hdc);
+        graphics.SetSmoothingMode(SmoothingModeNone);
+        graphics.SetCompositingQuality(CompositingQualityHighSpeed);
+        graphics.SetPixelOffsetMode(PixelOffsetModeNone);
+        SolidBrush brush(argb(rgb, alpha));
+        graphics.FillRectangle(&brush, (INT)x, (INT)y, (INT)(w + 0.5f), (INT)(h + 0.5f));
+    }
+    hdc_unlock((HDC)hdc, saved);
 }
 
 void
@@ -930,13 +1049,17 @@ icon_round_rect_corners(
         return;
     }
     ensure_gdiplus();
-    Graphics g((HDC)hdc);
-    g.SetSmoothingMode(SmoothingModeAntiAlias);
-    g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
-    GraphicsPath path;
-    add_rounded_rect_corners(&path, x, y, w, h, tl, tr, br, bl);
-    SolidBrush brush(argb(rgb, alpha));
-    g.FillPath(&brush, &path);
+    int saved = hdc_lock((HDC)hdc);
+    {
+        Graphics g((HDC)hdc);
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+        GraphicsPath path;
+        add_rounded_rect_corners(&path, x, y, w, h, tl, tr, br, bl);
+        SolidBrush brush(argb(rgb, alpha));
+        g.FillPath(&brush, &path);
+    }
+    hdc_unlock((HDC)hdc, saved);
 }
 
 void
@@ -956,14 +1079,18 @@ icon_round_stroke(
         return;
     }
     ensure_gdiplus();
-    Graphics g((HDC)hdc);
-    g.SetSmoothingMode(SmoothingModeAntiAlias);
-    g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
-    GraphicsPath path;
-    add_rounded_rect(&path, x + stroke * 0.5f, y + stroke * 0.5f, w - stroke, h - stroke, radius);
-    Pen pen(argb(rgb, alpha), stroke);
-    pen.SetLineJoin(LineJoinRound);
-    g.DrawPath(&pen, &path);
+    int saved = hdc_lock((HDC)hdc);
+    {
+        Graphics g((HDC)hdc);
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+        GraphicsPath path;
+        add_rounded_rect(&path, x + stroke * 0.5f, y + stroke * 0.5f, w - stroke, h - stroke, radius);
+        Pen pen(argb(rgb, alpha), stroke);
+        pen.SetLineJoin(LineJoinRound);
+        g.DrawPath(&pen, &path);
+    }
+    hdc_unlock((HDC)hdc, saved);
 }
 
 static void
@@ -985,24 +1112,12 @@ draw_label(
     if (!hdc || !text || w < 1.0f || h < 1.0f || px < 1.0f || alpha <= 0) {
         return;
     }
-    ensure_gdiplus();
-    Graphics g((HDC)hdc);
-    g.SetSmoothingMode(SmoothingModeAntiAlias);
-    g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
-    g.SetTextRenderingHint(alpha >= 250 ? TextRenderingHintClearTypeGridFit : TextRenderingHintAntiAlias);
-    g.SetTextContrast(1200);
-
-    Font *font = cached_font(px, weight);
-    if (!font) {
-        return;
-    }
-    SolidBrush brush(argb(rgb, alpha));
-    StringFormat fmt(StringFormat::GenericTypographic());
-    fmt.SetAlignment(align);
-    fmt.SetLineAlignment(StringAlignmentCenter);
-    fmt.SetFormatFlags(StringFormatFlagsNoWrap | StringFormatFlagsNoClip | StringFormatFlagsMeasureTrailingSpaces);
-    fmt.SetTrimming(ellipsize ? StringTrimmingEllipsisCharacter : StringTrimmingNone);
-    g.DrawString(text, -1, font, RectF(x, y, w, h), &fmt, &brush);
+    x = floorf(x + 0.5f);
+    y = floorf(y + 0.5f);
+    w = floorf(w + 0.5f);
+    h = floorf(h + 0.5f);
+    px = snap_px(px);
+    gdi_draw_label((HDC)hdc, (int)x, (int)y, (int)w, (int)h, text, rgb, px, weight, align, ellipsize);
 }
 
 void
@@ -1077,54 +1192,31 @@ icon_measure_label(void *hdc, const wchar_t *text, float px, int weight)
     if (!text || !text[0] || px < 1.0f) {
         return 0.0f;
     }
-    ensure_gdiplus();
+    px = snap_px(px);
 
     HDC raw = hdc ? (HDC)hdc : GetDC(NULL);
     if (!raw) {
         return 0.0f;
     }
 
-    Graphics g(raw);
-    g.SetPageUnit(UnitPixel);
-    g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
-    g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
-
-    Font *font = cached_font(px, weight);
-    if (!font) {
-        if (!hdc) {
-            ReleaseDC(NULL, raw);
-        }
-        return 0.0f;
-    }
-    StringFormat fmt(StringFormat::GenericTypographic());
-    fmt.SetAlignment(StringAlignmentNear);
-    fmt.SetLineAlignment(StringAlignmentNear);
-    fmt.SetFormatFlags(StringFormatFlagsMeasureTrailingSpaces | StringFormatFlagsNoWrap | StringFormatFlagsNoClip);
-    fmt.SetTrimming(StringTrimmingNone);
-
-    int len = (int)wcslen(text);
-    CharacterRange range(0, len);
-    fmt.SetMeasurableCharacterRanges(1, &range);
-
-    RectF layout(0.0f, 0.0f, 8192.0f, px * 6.0f);
-    Region region;
-    RectF bounds;
-    float width = 0.0f;
-    if (g.MeasureCharacterRanges(text, len, font, layout, &fmt, 1, &region) == Ok) {
-        region.GetBounds(&bounds, &g);
-        width = bounds.GetRight();
-    } else {
-        g.MeasureString(text, len, font, layout, &fmt, &bounds);
-        width = bounds.Width;
+    HFONT font = cached_hfont(px, weight);
+    SIZE sz = {0, 0};
+    if (font) {
+        int saved = hdc_lock(raw);
+        hdc_reset_gdi(raw);
+        HGDIOBJ old = SelectObject(raw, font);
+        GetTextExtentPoint32W(raw, text, (int)wcslen(text), &sz);
+        SelectObject(raw, old);
+        hdc_unlock(raw, saved);
     }
 
     if (!hdc) {
         ReleaseDC(NULL, raw);
     }
-    if (width < 0.0f) {
+    if (sz.cx < 0) {
         return 0.0f;
     }
-    return width;
+    return (float)sz.cx;
 }
 
 void
@@ -1153,32 +1245,27 @@ icon_draw_label_shimmer(
         phase -= floorf(phase);
     }
 
-    x = floorf(x);
-    y = floorf(y);
-    w = floorf(w);
-    h = floorf(h);
-    px = floorf(px + 0.5f);
+    x = floorf(x + 0.5f);
+    y = floorf(y + 0.5f);
+    w = floorf(w + 0.5f);
+    h = floorf(h + 0.5f);
+    px = snap_px(px);
 
-    ensure_gdiplus();
-    Graphics g((HDC)hdc);
-    g.SetSmoothingMode(SmoothingModeNone);
-    g.SetPixelOffsetMode(PixelOffsetModeNone);
-    g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
-    g.SetTextContrast(2200);
-
-    Font *font = cached_font(px, weight);
-    if (!font) {
+    if (!gdi_draw_label(
+            (HDC)hdc,
+            (int)x,
+            (int)y,
+            (int)w,
+            (int)h,
+            text,
+            rgb,
+            px,
+            weight,
+            StringAlignmentFar,
+            0
+        )) {
         return;
     }
-    StringFormat fmt(StringFormat::GenericTypographic());
-    fmt.SetAlignment(StringAlignmentFar);
-    fmt.SetLineAlignment(StringAlignmentCenter);
-    fmt.SetFormatFlags(StringFormatFlagsNoWrap | StringFormatFlagsNoClip | StringFormatFlagsMeasureTrailingSpaces);
-    fmt.SetTrimming(StringTrimmingNone);
-
-    RectF box(x, y, w, h);
-    SolidBrush base(argb(rgb, alpha >= 255 ? 255 : alpha));
-    g.DrawString(text, -1, font, box, &fmt, &base);
 
     float band = 56.0f;
     if (band > w * 0.34f) {
@@ -1189,10 +1276,26 @@ icon_draw_label_shimmer(
     }
     float travel = w + band;
     float cx = floorf(x - band + travel * phase);
-    g.SetClip(RectF(cx, y, band, h), CombineModeReplace);
-    SolidBrush hi(argb(shine, 255));
-    g.DrawString(text, -1, font, box, &fmt, &hi);
-    g.ResetClip();
+    HRGN clip = CreateRectRgn((int)cx, (int)y, (int)(cx + band), (int)(y + h));
+    if (clip) {
+        int saved = SaveDC((HDC)hdc);
+        SelectClipRgn((HDC)hdc, clip);
+        gdi_draw_label(
+            (HDC)hdc,
+            (int)x,
+            (int)y,
+            (int)w,
+            (int)h,
+            text,
+            shine,
+            px,
+            weight,
+            StringAlignmentFar,
+            0
+        );
+        RestoreDC((HDC)hdc, saved);
+        DeleteObject(clip);
+    }
 }
 
 void
@@ -1414,11 +1517,15 @@ icon_draw_avatar(void *hdc, const char *path, float cx, float cy, float size)
 
     int x = (int)(cx - dim * 0.5f + 0.5f);
     int y = (int)(cy - dim * 0.5f + 0.5f);
-    Graphics g((HDC)hdc);
-    g.SetCompositingMode(CompositingModeSourceOver);
-    g.SetCompositingQuality(CompositingQualityHighQuality);
-    g.SetInterpolationMode(InterpolationModeNearestNeighbor);
-    g.SetPixelOffsetMode(PixelOffsetModeHalf);
-    g.SetSmoothingMode(SmoothingModeNone);
-    g.DrawImage(fit, x, y, dim, dim);
+    int saved = hdc_lock((HDC)hdc);
+    {
+        Graphics g((HDC)hdc);
+        g.SetCompositingMode(CompositingModeSourceOver);
+        g.SetCompositingQuality(CompositingQualityHighQuality);
+        g.SetInterpolationMode(InterpolationModeNearestNeighbor);
+        g.SetPixelOffsetMode(PixelOffsetModeHalf);
+        g.SetSmoothingMode(SmoothingModeNone);
+        g.DrawImage(fit, x, y, dim, dim);
+    }
+    hdc_unlock((HDC)hdc, saved);
 }

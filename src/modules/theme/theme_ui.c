@@ -196,7 +196,7 @@ draw_play_chip(
     const wchar_t *label = playing ? L"PAUSE" : L"PLAY";
     float text_x = x + pad + icon_box + h * 0.12f;
     float text_w = x + w - pad - text_x;
-    float px = h * 0.32f;
+    float px = (float)((int)(h * 0.32f + 0.5f));
     if (px < 11.0f) {
         px = 11.0f;
     }

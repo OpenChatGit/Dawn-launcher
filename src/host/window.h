@@ -4,6 +4,7 @@
 #include "shared/api.h"
 #include "shared/window_types.h"
 
+void window_enable_dpi_awareness(void);
 int window_create(HostWindow *window, const char *title, int width, int height);
 void window_destroy(HostWindow *window);
 void window_pump(HostWindow *window);

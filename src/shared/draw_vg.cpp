@@ -636,6 +636,10 @@ vg_text_width(const wchar_t *text, float px, int weight)
     if (!text || !text[0] || px < 1.0f) {
         return 0.0f;
     }
+    px = floorf(px + 0.5f);
+    if (px < 1.0f) {
+        px = 1.0f;
+    }
     if (!g_cv) {
         if (!vg_begin(&scratch_px, 1, 1)) {
             return 0.0f;
@@ -696,6 +700,14 @@ vg_text(
     if (!g_cv || !text || !text[0] || alpha <= 0 || px < 1.0f) {
         return;
     }
+    x = floorf(x + 0.5f);
+    y = floorf(y + 0.5f);
+    w = floorf(w + 0.5f);
+    h = floorf(h + 0.5f);
+    px = floorf(px + 0.5f);
+    if (px < 1.0f) {
+        px = 1.0f;
+    }
     if (!set_font(px, weight)) {
         return;
     }
@@ -718,7 +730,8 @@ vg_text(
     } else if (align == VG_ALIGN_RIGHT) {
         tx = x + w - tw;
     }
-    baseline = y + (h - (ascent - descent)) * 0.5f + ascent;
+    baseline = floorf(y + (h - (ascent - descent)) * 0.5f + ascent + 0.5f);
+    tx = floorf(tx + 0.5f);
     plutovg_canvas_save(g_cv);
     if (w > 1.0f && h > 1.0f) {
         plutovg_canvas_clip_rect(g_cv, x, y, w, h);

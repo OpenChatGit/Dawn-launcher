@@ -557,6 +557,14 @@ window_pump(HostWindow *window)
                 window->text[window->text_len] = '\0';
             }
         } else if (ev.type == ConfigureNotify) {
+            {
+                float dpi = linux_dpi_scale(dpy);
+                if (dpi < 0.75f) {
+                    dpi = 1.0f;
+                }
+                window->dpi_scale = dpi;
+                window->corner_radius = 16.0f * dpi;
+            }
             if (ev.xconfigure.width != window->width || ev.xconfigure.height != window->height) {
                 int w = ev.xconfigure.width;
                 int h = ev.xconfigure.height;

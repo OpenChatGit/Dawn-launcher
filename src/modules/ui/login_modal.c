@@ -52,8 +52,8 @@ layout_modal(Platform *platform, LoginLayout *out)
     if (out->w > (float)platform->width - 32.0f) {
         out->w = (float)platform->width - 32.0f;
     }
-    out->x = ((float)platform->width - out->w) * 0.5f;
-    out->y = ((float)platform->height - out->h) * 0.5f;
+    out->x = (float)((int)(((float)platform->width - out->w) * 0.5f + 0.5f));
+    out->y = (float)((int)(((float)platform->height - out->h) * 0.5f + 0.5f));
     out->steam_w = out->w - inset * 2.0f;
     out->steam_h = (float)modal_px(MODAL_BTN_H, s);
     out->steam_x = out->x + inset;

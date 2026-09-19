@@ -97,6 +97,15 @@ set_target_properties(app_logic PROPERTIES
 )
 
 add_executable(host ${HOST_SRC})
+if(WIN32)
+    file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/src/host/app.manifest" APP_MANIFEST_PATH)
+    configure_file(
+        ${CMAKE_SOURCE_DIR}/src/host/app.rc.in
+        ${CMAKE_BINARY_DIR}/generated/app.rc
+        @ONLY
+    )
+    target_sources(host PRIVATE ${CMAKE_BINARY_DIR}/generated/app.rc)
+endif()
 target_include_directories(host PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src/host

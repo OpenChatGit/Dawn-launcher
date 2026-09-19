@@ -13,15 +13,16 @@
 #include <string.h>
 #include <wchar.h>
 
-#define ACCOUNT_MENU_W 268.0f
-#define ACCOUNT_INSET 12.0f
-#define ACCOUNT_ICON 32.0f
-#define ACCOUNT_TEXT_GAP 12.0f
-#define ACCOUNT_IDENTITY_H 40.0f
-#define ACCOUNT_DLC_H 36.0f
-#define ACCOUNT_PILL_H 34.0f
-#define ACCOUNT_ROW_GAP 10.0f
-#define ACCOUNT_DIVIDER_GAP 10.0f
+#define ACCOUNT_MENU_W 220.0f
+#define ACCOUNT_INSET 8.0f
+#define ACCOUNT_ICON 24.0f
+#define ACCOUNT_TEXT_GAP 8.0f
+#define ACCOUNT_IDENTITY_H 32.0f
+#define ACCOUNT_PILL_H 30.0f
+#define ACCOUNT_ROW_GAP 4.0f
+#define ACCOUNT_DIVIDER_GAP 6.0f
+#define ACCOUNT_RADIUS 10.0f
+#define ACCOUNT_ITEM_ICON 16.0f
 #define UPDATE_PAD_X 10.0f
 #define UPDATE_ICON_GAP 6.0f
 #define UPDATE_TEXT_PX 12.0f
@@ -51,8 +52,6 @@ typedef struct TitlebarLayout {
     int ident_x;
     int ident_y;
     int ident_h;
-    int dlc_y;
-    int dlc_h;
     int divider_y;
     int settings_y;
     int icon_s;
@@ -133,7 +132,7 @@ layout(Platform *platform, TitlebarLayout *out)
     out->avatar_x = out->min_x - out->gap - out->btn;
     {
         float icon_s = (float)out->btn * 0.42f;
-        float text_px = UPDATE_TEXT_PX * s;
+        float text_px = (float)px(UPDATE_TEXT_PX, s);
         float pad = UPDATE_PAD_X * s;
         float gap = UPDATE_ICON_GAP * s;
         float tw = 0.0f;
@@ -159,7 +158,7 @@ layout(Platform *platform, TitlebarLayout *out)
             os_utf8_to_wide(line, tip, 48);
         }
         if (tip[0] && platform->hdc) {
-            tw = icon_measure_label(platform->hdc, tip, 11.0f * s, 600);
+            tw = icon_measure_label(platform->hdc, tip, (float)px(11, s), 600);
         }
         if (tip[0] && tw < 8.0f) {
             tw = (float)wcslen(tip) * 11.0f * s * 0.62f;
@@ -177,10 +176,9 @@ layout(Platform *platform, TitlebarLayout *out)
     int div = px(ACCOUNT_DIVIDER_GAP, s);
     out->icon_s = px(ACCOUNT_ICON, s);
     out->ident_h = px(ACCOUNT_IDENTITY_H, s);
-    out->dlc_h = login_modal_signed_in() ? px(ACCOUNT_DLC_H, s) : 0;
     out->item_h = px(ACCOUNT_PILL_H, s);
     out->menu_w = px(ACCOUNT_MENU_W, s);
-    out->menu_h = inset + out->ident_h + (out->dlc_h ? div + out->dlc_h : 0) + div + 1 + div +
+    out->menu_h = inset + out->ident_h + div + 1 + div +
         out->item_h + px(ACCOUNT_ROW_GAP, s) + out->item_h + inset;
     out->menu_x = out->avatar_x + out->btn - out->menu_w;
     if (out->menu_x < out->pad) {
@@ -189,15 +187,14 @@ layout(Platform *platform, TitlebarLayout *out)
     out->menu_y = out->bar + px(8, s);
     out->ident_x = out->menu_x + inset;
     out->ident_y = out->menu_y + inset;
-    out->dlc_y = out->ident_y + out->ident_h + (out->dlc_h ? div : 0);
-    out->divider_y = out->dlc_y + out->dlc_h + div;
+    out->divider_y = out->ident_y + out->ident_h + div;
     out->item_x = out->menu_x + inset;
     out->settings_y = out->divider_y + 1 + div;
     out->item_y = out->settings_y + out->item_h + px(ACCOUNT_ROW_GAP, s);
     out->item_w = out->menu_w - inset * 2;
     out->text_x = out->ident_x + out->icon_s + px(ACCOUNT_TEXT_GAP, s);
     {
-        float copy_px = 11.0f * s;
+        float copy_px = (float)px(11, s);
         float tw = 0.0f;
         float pad = 8.0f * s;
 
@@ -207,10 +204,10 @@ layout(Platform *platform, TitlebarLayout *out)
         if (tw < 8.0f) {
             tw = 7.0f * copy_px * 0.62f;
         }
-        out->copy_h = px(22, s);
-        out->copy_w = (int)(pad + tw + pad + 0.5f);
-        out->copy_x = out->menu_x + out->menu_w - inset - out->copy_w;
-        out->copy_y = out->ident_y + 2 + ((int)((float)out->ident_h * 0.55f) - out->copy_h) / 2;
+    out->copy_h = px(20, s);
+    out->copy_w = (int)(pad + tw + pad + 0.5f);
+    out->copy_x = out->menu_x + out->menu_w - inset - out->copy_w;
+    out->copy_y = out->ident_y + (out->ident_h - out->copy_h) / 2;
         if (out->copy_y < out->ident_y) {
             out->copy_y = out->ident_y;
         }
@@ -303,7 +300,7 @@ update_chip(Platform *platform, const TitlebarLayout *L, float hover, int presse
         h,
         L"New Version",
         fg,
-        UPDATE_TEXT_PX * s,
+        (float)px(UPDATE_TEXT_PX, s),
         600
     );
 }
@@ -342,7 +339,7 @@ update_tooltip(Platform *platform, const TitlebarLayout *L, float open)
         h,
         tip,
         chrome->title_color,
-        11.0f * s,
+        (float)px(11, s),
         600
     );
 }
@@ -386,6 +383,19 @@ draw_row_icon(void *hdc, IconId id, float cx, float cy, float box, uint32_t rgb)
 }
 
 static void
+account_menu_card(Platform *platform, float x, float y, float w, float h, float open)
+{
+    const ThemeChrome *chrome = theme_chrome();
+    float s = platform->dpi_scale > 0.1f ? platform->dpi_scale : 1.0f;
+    float radius = (float)px(ACCOUNT_RADIUS, s);
+    int alpha = (int)(open * 255.0f);
+
+    icon_round_rect(platform->hdc, x, y + 2.0f * s, w, h, radius, 0x000000, alpha * 40 / 255);
+    icon_round_rect(platform->hdc, x, y, w, h, radius, modal_panel_color(), alpha);
+    icon_round_stroke(platform->hdc, x, y, w, h, radius, chrome->muted, alpha * 28 / 255, 1.0f);
+}
+
+static void
 menu_pill(
     Platform *platform,
     const TitlebarLayout *L,
@@ -400,47 +410,28 @@ menu_pill(
     const ThemeChrome *chrome = theme_chrome();
     float s = platform->dpi_scale > 0.1f ? platform->dpi_scale : 1.0f;
     float use_hover = pressed ? 1.0f : hover;
-    float pill_r = (float)L->item_h * 0.28f;
-    float icon_s = (float)L->icon_s;
-    float icon_cx = (float)L->ident_x + icon_s * 0.5f;
-    float text_x = (float)L->text_x;
-    float text_w = (float)L->menu_x + (float)L->menu_w - text_x - (float)px(ACCOUNT_INSET, s);
-    uint32_t fg = use_hover > 0.2f ? chrome->hover : chrome->title_color;
+    float x = (float)L->item_x;
+    float w = (float)L->item_w;
+    float h = (float)L->item_h;
+    float pad = (float)px(10, s);
+    float icon_s = (float)px(ACCOUNT_ITEM_ICON, s);
+    float icon_cx = x + pad + icon_s * 0.5f;
+    float text_x = x + pad + icon_s + (float)px(8, s);
+    float text_w = x + w - text_x - pad;
+    float radius = (float)px(7, s);
+    uint32_t fg = chrome->title_color;
+    int alpha = open >= 0.98f ? 255 : (int)(open * 255.0f);
 
-    icon_round_rect(
-        platform->hdc,
-        (float)L->item_x,
-        y,
-        (float)L->item_w,
-        (float)L->item_h,
-        pill_r,
-        modal_button_fill(use_hover),
-        (int)(open * 255.0f)
-    );
-    icon_round_stroke(
-        platform->hdc,
-        (float)L->item_x,
-        y,
-        (float)L->item_w,
-        (float)L->item_h,
-        pill_r,
-        use_hover > 0.2f ? chrome->hover : chrome->muted,
-        (int)(open * (28.0f + use_hover * 24.0f)),
-        1.0f
-    );
-    draw_row_icon(platform->hdc, icon, icon_cx, y + (float)L->item_h * 0.5f, icon_s, fg);
-    icon_draw_label_alpha(
-        platform->hdc,
-        text_x,
-        y,
-        text_w,
-        (float)L->item_h,
-        label,
-        fg,
-        (float)px(13, s),
-        600,
-        (int)(open * 255.0f)
-    );
+    if (use_hover > 0.01f) {
+        uint32_t fill = modal_mix(modal_panel_color(), 0xffffff, 10 + (int)(use_hover * 16.0f));
+        icon_round_rect(platform->hdc, x, y, w, h, radius, fill, (int)(open * use_hover * 255.0f));
+        fg = use_hover > 0.2f ? chrome->hover : chrome->title_color;
+    }
+
+    icon_set_alpha(alpha);
+    icon_draw(platform->hdc, icon, icon_cx, y + h * 0.5f, icon_s, fg, 0.0f);
+    icon_set_alpha(255);
+    icon_draw_label_alpha(platform->hdc, text_x, y, text_w, h, label, fg, (float)px(13, s), 600, alpha);
 }
 
 static void
@@ -466,7 +457,7 @@ account_menu(
     float w = (float)L->menu_w;
     float h = (float)L->menu_h;
 
-    modal_draw_card(platform->hdc, x, y, w, h, open, s);
+    account_menu_card(platform, x, y, w, h, open);
 
     if (!show_content) {
         return;
@@ -540,8 +531,8 @@ account_menu(
         (float)L->ident_h - name_h,
         signed_in ? L"Signed in" : L"Not signed in",
         chrome->muted,
-        (float)px(11, s),
-        400,
+        (float)px(12, s),
+        600,
         (int)(open * 255.0f)
     );
 
@@ -551,72 +542,26 @@ account_menu(
             hit(platform->mouse_x, platform->mouse_y, L->copy_x, L->copy_y, L->copy_w, L->copy_h)
             ? 1.0f : g_hover_copy;
         uint32_t fg = use > 0.2f || copied ? chrome->hover : chrome->muted;
-        int fill = (int)(open * (copied ? 40.0f : (18.0f + use * 22.0f)));
+        float cx = (float)L->copy_x;
+        float cy = (float)L->copy_y;
+        float cw = (float)L->copy_w;
+        float ch = (float)L->copy_h;
+        float cr = (float)px(6, s);
 
-        icon_round_rect(
-            platform->hdc,
-            (float)L->copy_x,
-            (float)L->copy_y,
-            (float)L->copy_w,
-            (float)L->copy_h,
-            (float)L->copy_h * 0.5f,
-            chrome->hover,
-            fill
-        );
-        icon_round_stroke(
-            platform->hdc,
-            (float)L->copy_x,
-            (float)L->copy_y,
-            (float)L->copy_w,
-            (float)L->copy_h,
-            (float)L->copy_h * 0.5f,
-            use > 0.2f || copied ? chrome->hover : chrome->muted,
-            (int)(open * (36.0f + use * 24.0f)),
-            1.0f
-        );
+        if (use > 0.01f || copied) {
+            uint32_t fill = modal_mix(modal_panel_color(), 0xffffff, copied ? 22 : 10 + (int)(use * 16.0f));
+            icon_round_rect(platform->hdc, cx, cy, cw, ch, cr, fill, (int)(open * 255.0f));
+        }
         icon_draw_label_center_alpha(
             platform->hdc,
-            (float)L->copy_x,
-            (float)L->copy_y,
-            (float)L->copy_w,
-            (float)L->copy_h,
+            cx,
+            cy,
+            cw,
+            ch,
             copied ? L"Copied" : L"Copy ID",
             fg,
-            (float)px(11, s),
+            (float)px(12, s),
             600,
-            (int)(open * 255.0f)
-        );
-    }
-
-    if (signed_in && L->dlc_h > 0) {
-        float dlc_y = (float)L->dlc_y;
-        float line_h = (float)L->dlc_h * 0.5f;
-        int forsaken = platform->steam_owns_forsaken ? platform->steam_owns_forsaken() : -1;
-        int shadowkeep = platform->steam_owns_shadowkeep ? platform->steam_owns_shadowkeep() : -1;
-        icon_draw_label_alpha(
-            platform->hdc,
-            ident_x,
-            dlc_y,
-            (float)L->item_w,
-            line_h,
-            forsaken > 0 ? L"Forsaken Pack  ·  Owned" :
-                forsaken == 0 ? L"Forsaken Pack  ·  Not owned" : L"Forsaken Pack  ·  Hidden",
-            chrome->muted,
-            (float)px(11, s),
-            400,
-            (int)(open * 255.0f)
-        );
-        icon_draw_label_alpha(
-            platform->hdc,
-            ident_x,
-            dlc_y + line_h,
-            (float)L->item_w,
-            line_h,
-            shadowkeep > 0 ? L"Shadowkeep Pack  ·  Owned" :
-                shadowkeep == 0 ? L"Shadowkeep Pack  ·  Not owned" : L"Shadowkeep Pack  ·  Hidden",
-            chrome->muted,
-            (float)px(11, s),
-            400,
             (int)(open * 255.0f)
         );
     }

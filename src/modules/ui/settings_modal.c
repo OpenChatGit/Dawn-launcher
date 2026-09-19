@@ -5,10 +5,18 @@
 #include "shared/icons.h"
 #include "shared/os.h"
 #include "shared/theme.h"
+#include "shared/user_id.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
+
+enum {
+    SETTINGS_PAGE_USER = 0,
+    SETTINGS_PAGE_GENERAL,
+    SETTINGS_PAGE_INSTALL,
+    SETTINGS_PAGE_COUNT
+};
 
 typedef struct SettingsLayout {
     float overlay_w;
@@ -20,6 +28,23 @@ typedef struct SettingsLayout {
     float close_x;
     float close_y;
     float close_s;
+    float side_x;
+    float side_y;
+    float side_w;
+    float side_h;
+    float nav_x;
+    float nav_y;
+    float nav_w;
+    float nav_h;
+    float nav_gap;
+    float content_x;
+    float content_y;
+    float content_w;
+    float content_h;
+    float title_x;
+    float title_y;
+    float title_w;
+    float title_h;
     float path_x;
     float path_y;
     float path_w;
@@ -51,11 +76,19 @@ typedef struct SettingsLayout {
     float status_y;
     float status_w;
     float status_h;
+    float avatar_x;
+    float avatar_y;
+    float avatar_s;
+    float copy_x;
+    float copy_y;
+    float copy_w;
+    float copy_h;
 } SettingsLayout;
 
 static int g_open;
 static int g_block_mouse;
 static int g_arm_download;
+static int g_page;
 static int g_lang_open;
 static int g_lang_scroll;
 static int g_lang_drag;
@@ -67,7 +100,10 @@ static float g_hover_browse;
 static float g_hover_lang;
 static float g_hover_ok;
 static float g_hover_item;
+static float g_hover_nav[SETTINGS_PAGE_COUNT];
+static float g_hover_copy;
 static int g_over_item;
+static uint32_t g_copied_ms;
 static wchar_t g_status_w[160];
 
 static const char *k_lang_steam[] = {
@@ -102,6 +138,18 @@ static const wchar_t *k_lang_label[] = {
     L"Korean"
 };
 
+static const wchar_t *k_page_label[] = {
+    L"User",
+    L"General",
+    L"Installation"
+};
+
+static const IconId k_page_icon[] = {
+    ICON_USER,
+    ICON_GLOBE,
+    ICON_DOWNLOAD
+};
+
 #define LANG_OPTION_COUNT ((int)(sizeof(k_lang_steam) / sizeof(k_lang_steam[0])))
 #define LANG_VISIBLE 5
 
@@ -109,32 +157,52 @@ static void
 layout_modal(Platform *platform, SettingsLayout *out)
 {
     float s = platform->dpi_scale > 0.1f ? platform->dpi_scale : 1.0f;
-    float inset = (float)modal_px(MODAL_INSET, s);
+    float inset = (float)modal_px(16, s);
     float gap = (float)modal_px(12, s);
     float inner = (float)modal_px(6, s);
     float browse_px = (float)modal_px(12, s);
     float tw = 0.0f;
-    float title_y;
-    float title_h;
 
     out->overlay_w = (float)platform->width;
     out->overlay_h = (float)platform->height;
-    out->w = (float)modal_px(360, s);
+    out->w = (float)modal_px(560, s);
+    out->h = (float)modal_px(392, s);
     if (out->w > (float)platform->width - 32.0f) {
         out->w = (float)platform->width - 32.0f;
     }
-    out->h = (float)modal_px(244, s);
-    out->x = ((float)platform->width - out->w) * 0.5f;
-    out->y = ((float)platform->height - out->h) * 0.5f;
-    out->close_s = (float)modal_px(MODAL_CLOSE, s);
-    title_y = out->y + (float)modal_px(16, s);
-    title_h = (float)modal_px(20, s);
+    if (out->h > (float)platform->height - 32.0f) {
+        out->h = (float)platform->height - 32.0f;
+    }
+    out->x = (float)((int)(((float)platform->width - out->w) * 0.5f + 0.5f));
+    out->y = (float)((int)(((float)platform->height - out->h) * 0.5f + 0.5f));
+    out->close_s = (float)modal_px(28, s);
     out->close_x = out->x + out->w - inset - out->close_s;
-    out->close_y = title_y + (title_h - out->close_s) * 0.5f;
-    out->path_h = (float)modal_px(MODAL_FIELD_H, s);
-    out->path_x = out->x + inset;
-    out->path_y = out->y + (float)modal_px(78, s);
-    out->path_w = out->w - inset * 2.0f;
+    out->close_y = out->y + inset;
+    out->side_w = (float)modal_px(148, s);
+    if (out->side_w > out->w * 0.36f) {
+        out->side_w = out->w * 0.36f;
+    }
+    out->side_x = out->x;
+    out->side_y = out->y;
+    out->side_h = out->h;
+    out->nav_x = out->side_x + (float)modal_px(10, s);
+    out->nav_y = out->y + (float)modal_px(56, s);
+    out->nav_w = out->side_w - (float)modal_px(20, s);
+    out->nav_h = (float)modal_px(30, s);
+    out->nav_gap = (float)modal_px(4, s);
+    out->content_x = out->x + out->side_w + (float)modal_px(20, s);
+    out->content_y = out->y + (float)modal_px(56, s);
+    out->content_w = out->x + out->w - inset - out->content_x;
+    out->content_h = out->y + out->h - inset - out->content_y;
+    out->title_x = out->content_x;
+    out->title_y = out->y + inset;
+    out->title_w = out->close_x - out->title_x - (float)modal_px(8, s);
+    out->title_h = (float)modal_px(20, s);
+
+    out->path_h = (float)modal_px(36, s);
+    out->path_x = out->content_x;
+    out->path_y = out->content_y + (float)modal_px(36, s);
+    out->path_w = out->content_w;
     if (platform->hdc) {
         static float browse_cache_px;
         static float browse_cache_w;
@@ -156,19 +224,20 @@ layout_modal(Platform *platform, SettingsLayout *out)
     }
     out->browse_x = out->path_x + out->path_w - inner - out->browse_w;
     out->browse_y = out->path_y + (out->path_h - out->browse_h) * 0.5f;
-    out->lang_x = out->path_x;
-    out->lang_y = out->path_y + out->path_h + gap;
-    out->lang_w = out->path_w;
+
+    out->lang_x = out->content_x;
+    out->lang_y = out->content_y + (float)modal_px(36, s);
+    out->lang_w = out->content_w;
     out->lang_h = out->path_h;
     out->item_h = (float)modal_px(26, s);
     out->menu_w = out->lang_w;
     out->menu_h = out->item_h * (float)LANG_VISIBLE + (float)modal_px(10, s);
     out->menu_x = out->lang_x;
-    out->menu_y = out->lang_y - (float)modal_px(6, s) - out->menu_h;
-    {
-        float floor_y = (float)CHROME_TITLEBAR * s + 8.0f;
-        if (out->menu_y < floor_y) {
-            out->menu_y = floor_y;
+    out->menu_y = out->lang_y + out->lang_h + (float)modal_px(4, s);
+    if (out->menu_y + out->menu_h > out->y + out->h - inset) {
+        out->menu_h = out->y + out->h - inset - out->menu_y;
+        if (out->menu_h < out->item_h + (float)modal_px(10, s)) {
+            out->menu_h = out->item_h + (float)modal_px(10, s);
         }
     }
     out->track_w = (float)modal_px(4, s);
@@ -196,14 +265,31 @@ layout_modal(Platform *platform, SettingsLayout *out)
         }
         out->thumb_y = out->track_y + travel * (float)g_lang_scroll / (float)max;
     }
+
     out->ok_w = (float)modal_px(76, s);
     out->ok_h = (float)modal_px(32, s);
-    out->ok_x = out->path_x + out->path_w - out->ok_w;
-    out->ok_y = out->lang_y + out->lang_h + gap;
-    out->status_x = out->path_x;
-    out->status_y = out->ok_y;
-    out->status_w = out->ok_x - out->status_x - (float)modal_px(12, s);
-    out->status_h = out->ok_h;
+    out->ok_x = out->content_x + out->content_w - out->ok_w;
+    out->ok_y = out->y + out->h - inset - out->ok_h;
+    out->status_x = out->content_x;
+    out->status_y = out->path_y + out->path_h + gap;
+    out->status_w = out->content_w;
+    out->status_h = (float)modal_px(36, s);
+
+    out->avatar_s = (float)modal_px(40, s);
+    out->avatar_x = out->content_x;
+    out->avatar_y = out->content_y + (float)modal_px(8, s);
+    out->copy_h = (float)modal_px(28, s);
+    if (platform->hdc) {
+        tw = icon_measure_label(platform->hdc, L"Copy ID", (float)modal_px(12, s), 600);
+    } else {
+        tw = 48.0f;
+    }
+    out->copy_w = tw + (float)modal_px(20, s);
+    out->copy_x = out->content_x + out->content_w - out->copy_w;
+    out->copy_y = out->avatar_y + (out->avatar_s - out->copy_h) * 0.5f;
+    if (out->copy_y < out->avatar_y) {
+        out->copy_y = out->avatar_y;
+    }
 }
 
 static const char *
@@ -295,6 +381,50 @@ modal_alpha_local(float anim)
     return alpha;
 }
 
+static float
+nav_row_y(const SettingsLayout *L, int page)
+{
+    return L->nav_y + (float)page * (L->nav_h + L->nav_gap);
+}
+
+static int
+nav_at(const SettingsLayout *L, int mx, int my)
+{
+    int i;
+    for (i = 0; i < SETTINGS_PAGE_COUNT; i++) {
+        if (modal_hit(mx, my, L->nav_x, nav_row_y(L, i), L->nav_w, L->nav_h)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void
+draw_section_label(
+    Platform *platform,
+    float x,
+    float y,
+    float w,
+    float h,
+    const wchar_t *text,
+    float scale,
+    float anim
+)
+{
+    icon_draw_label_alpha(
+        platform->hdc,
+        x,
+        y,
+        w,
+        h,
+        text,
+        theme_chrome()->muted,
+        (float)modal_px(12, scale),
+        600,
+        modal_alpha_local(anim)
+    );
+}
+
 static void
 draw_path_field(
     Platform *platform,
@@ -307,10 +437,10 @@ draw_path_field(
 )
 {
     const ThemeChrome *chrome = theme_chrome();
-    float radius = L->path_h * 0.30f;
-    float pad = (float)modal_px(14, scale);
+    float radius = L->path_h * 0.28f;
+    float pad = (float)modal_px(12, scale);
     float px = (float)modal_px(13, scale);
-    float chip_r = L->browse_h * 0.5f;
+    float chip_r = L->browse_h * 0.36f;
     float text_w;
     int alpha = (int)(anim * 255.0f);
     uint32_t field = modal_field_color();
@@ -328,8 +458,8 @@ draw_path_field(
         L->path_h,
         radius,
         stroke,
-        (int)(anim * (hover_browse > 0.2f ? 70.0f : 34.0f)),
-        hover_browse > 0.2f ? 1.2f : 1.0f
+        (int)(anim * (hover_browse > 0.2f ? 70.0f : 28.0f)),
+        1.0f
     );
     text_w = L->browse_x - L->path_x - pad - (float)modal_px(6, scale);
     if (text_w < 8.0f) {
@@ -344,7 +474,7 @@ draw_path_field(
         path,
         fg,
         px,
-        400,
+        600,
         modal_alpha_local(anim)
     );
     icon_round_rect(
@@ -490,8 +620,8 @@ draw_lang_field(
 )
 {
     const ThemeChrome *chrome = theme_chrome();
-    float radius = L->lang_h * 0.30f;
-    float pad = (float)modal_px(14, scale);
+    float radius = L->lang_h * 0.28f;
+    float pad = (float)modal_px(12, scale);
     float px = (float)modal_px(13, scale);
     int alpha = (int)(anim * 255.0f);
     uint32_t field = modal_field_color();
@@ -508,8 +638,8 @@ draw_lang_field(
         L->lang_h,
         radius,
         stroke,
-        (int)(anim * ((hover > 0.2f || open) ? 70.0f : 34.0f)),
-        (hover > 0.2f || open) ? 1.2f : 1.0f
+        (int)(anim * ((hover > 0.2f || open) ? 70.0f : 28.0f)),
+        1.0f
     );
     icon_draw_label_alpha(
         platform->hdc,
@@ -520,12 +650,12 @@ draw_lang_field(
         label,
         fg,
         px,
-        400,
+        600,
         modal_alpha_local(anim)
     );
     icon_draw(
         platform->hdc,
-        open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_UP,
+        open ? ICON_CHEVRON_UP : ICON_CHEVRON_DOWN,
         L->lang_x + L->lang_w - pad - chev * 0.5f,
         L->lang_y + L->lang_h * 0.5f,
         chev,
@@ -543,8 +673,11 @@ draw_lang_menu(Platform *platform, const SettingsLayout *L, int selected, int ov
     float text_w = L->track_x - L->menu_x - inset - 4.0f;
     int i;
     int alpha = modal_alpha_local(anim);
+    float radius = (float)modal_px(10, scale);
 
-    modal_draw_card(platform->hdc, L->menu_x, L->menu_y, L->menu_w, L->menu_h, anim, scale);
+    icon_round_rect(platform->hdc, L->menu_x, L->menu_y + 2.0f, L->menu_w, L->menu_h, radius, 0x000000, alpha * 40 / 255);
+    icon_round_rect(platform->hdc, L->menu_x, L->menu_y, L->menu_w, L->menu_h, radius, modal_panel_color(), alpha);
+    icon_round_stroke(platform->hdc, L->menu_x, L->menu_y, L->menu_w, L->menu_h, radius, chrome->muted, alpha * 28 / 255, 1.0f);
     if (text_w < 24.0f) {
         text_w = L->menu_w - inset * 2.0f;
     }
@@ -576,8 +709,8 @@ draw_lang_menu(Platform *platform, const SettingsLayout *L, int selected, int ov
             L->item_h,
             k_lang_label[idx],
             fg,
-            (float)modal_px(12, scale),
-            idx == selected ? 600 : 400,
+            (float)modal_px(13, scale),
+            idx == selected ? 600 : 600,
             alpha
         );
         y += L->item_h;
@@ -637,6 +770,212 @@ draw_ok_pill(
 }
 
 static void
+draw_card_outline(Platform *platform, const SettingsLayout *L, float anim, float scale)
+{
+    const ThemeChrome *chrome = theme_chrome();
+    float radius = (float)modal_px(MODAL_RADIUS, scale);
+    icon_round_stroke(
+        platform->hdc,
+        L->x,
+        L->y,
+        L->w,
+        L->h,
+        radius,
+        chrome->muted,
+        modal_alpha_local(anim) * 40 / 255,
+        1.0f
+    );
+}
+
+static void
+draw_sidebar(Platform *platform, const SettingsLayout *L, float anim, float scale)
+{
+    const ThemeChrome *chrome = theme_chrome();
+    int i;
+    int alpha = modal_alpha_local(anim);
+    float pad = (float)modal_px(10, scale);
+    float icon_s = (float)modal_px(16, scale);
+    float radius = (float)modal_px(MODAL_RADIUS, scale);
+    float edge = 1.0f;
+    float inner_r = radius - edge;
+
+    if (inner_r < 0.0f) {
+        inner_r = 0.0f;
+    }
+    icon_round_rect_corners(
+        platform->hdc,
+        L->side_x + edge,
+        L->y + edge,
+        L->side_w - edge,
+        L->h - edge * 2.0f,
+        inner_r,
+        0.0f,
+        0.0f,
+        inner_r,
+        modal_mix(modal_panel_color(), 0x000000, 22),
+        alpha
+    );
+    icon_fill_rect(
+        platform->hdc,
+        L->side_x + L->side_w,
+        L->y + (float)modal_px(14, scale),
+        1.0f,
+        L->h - (float)modal_px(28, scale),
+        chrome->muted,
+        alpha * 28 / 255
+    );
+    icon_draw_label_alpha(
+        platform->hdc,
+        L->nav_x,
+        L->y + (float)modal_px(16, scale),
+        L->nav_w,
+        (float)modal_px(20, scale),
+        L"Settings",
+        chrome->title_color,
+        (float)modal_px(13, scale),
+        600,
+        alpha
+    );
+    for (i = 0; i < SETTINGS_PAGE_COUNT; i++) {
+        float y = nav_row_y(L, i);
+        float hover = (i == g_page) ? 1.0f : g_hover_nav[i];
+        uint32_t fg = (i == g_page || hover > 0.2f) ? chrome->hover : chrome->muted;
+        float icon_cx = L->nav_x + pad + icon_s * 0.5f;
+        float text_x = L->nav_x + pad + icon_s + (float)modal_px(8, scale);
+
+        if (i == g_page || hover > 0.01f) {
+            uint32_t fill = modal_mix(modal_panel_color(), 0xffffff, i == g_page ? 22 : 10 + (int)(hover * 16.0f));
+            icon_round_rect(
+                platform->hdc,
+                L->nav_x,
+                y,
+                L->nav_w,
+                L->nav_h,
+                (float)modal_px(7, scale),
+                fill,
+                (int)(anim * (i == g_page ? 255.0f : hover * 255.0f))
+            );
+        }
+        icon_set_alpha(alpha);
+        icon_draw(platform->hdc, k_page_icon[i], icon_cx, y + L->nav_h * 0.5f, icon_s, fg, 0.0f);
+        icon_set_alpha(255);
+        icon_draw_label_alpha(
+            platform->hdc,
+            text_x,
+            y,
+            L->nav_x + L->nav_w - text_x - pad,
+            L->nav_h,
+            k_page_label[i],
+            fg,
+            (float)modal_px(13, scale),
+            600,
+            alpha
+        );
+    }
+}
+
+static void
+draw_user_page(Platform *platform, const SettingsLayout *L, float anim, float scale)
+{
+    const ThemeChrome *chrome = theme_chrome();
+    int signed_in = login_modal_signed_in();
+    const char *user = login_modal_username();
+    const char *avatar = login_modal_avatar_path();
+    wchar_t name_w[64];
+    float text_x = L->avatar_x + L->avatar_s + (float)modal_px(12, scale);
+    float text_w = L->copy_x - text_x - (float)modal_px(8, scale);
+    if (text_w < 8.0f) {
+        text_w = 8.0f;
+    }
+    int copied = g_copied_ms && (os_tick_ms() - g_copied_ms) < 1400u;
+    float use = g_hover_copy;
+    uint32_t fg = use > 0.2f || copied ? chrome->hover : chrome->muted;
+    int alpha = modal_alpha_local(anim);
+
+    name_w[0] = 0;
+    if (signed_in && user && user[0]) {
+        os_utf8_to_wide(user, name_w, 64);
+    }
+    icon_round_rect(
+        platform->hdc,
+        L->avatar_x,
+        L->avatar_y,
+        L->avatar_s,
+        L->avatar_s,
+        L->avatar_s * 0.5f,
+        chrome->hover,
+        alpha * 18 / 255
+    );
+    if (signed_in && avatar && avatar[0]) {
+        icon_draw_avatar(
+            platform->hdc,
+            avatar,
+            L->avatar_x + L->avatar_s * 0.5f,
+            L->avatar_y + L->avatar_s * 0.5f,
+            L->avatar_s
+        );
+    } else {
+        icon_draw(
+            platform->hdc,
+            ICON_USER,
+            L->avatar_x + L->avatar_s * 0.5f,
+            L->avatar_y + L->avatar_s * 0.5f,
+            L->avatar_s * 0.46f,
+            chrome->muted,
+            0.0f
+        );
+    }
+    icon_draw_label_alpha(
+        platform->hdc,
+        text_x,
+        L->avatar_y,
+        text_w,
+        L->avatar_s * 0.55f,
+        signed_in && name_w[0] ? name_w : L"Guest",
+        chrome->title_color,
+        (float)modal_px(13, scale),
+        600,
+        alpha
+    );
+    icon_draw_label_alpha(
+        platform->hdc,
+        text_x,
+        L->avatar_y + L->avatar_s * 0.48f,
+        text_w,
+        L->avatar_s * 0.52f,
+        signed_in ? L"Signed in with Steam" : L"Not signed in",
+        chrome->muted,
+        (float)modal_px(12, scale),
+        600,
+        alpha
+    );
+    if (use > 0.01f || copied) {
+        icon_round_rect(
+            platform->hdc,
+            L->copy_x,
+            L->copy_y,
+            L->copy_w,
+            L->copy_h,
+            (float)modal_px(6, scale),
+            modal_mix(modal_panel_color(), 0xffffff, copied ? 22 : 10 + (int)(use * 16.0f)),
+            alpha
+        );
+    }
+    icon_draw_label_center_alpha(
+        platform->hdc,
+        L->copy_x,
+        L->copy_y,
+        L->copy_w,
+        L->copy_h,
+        copied ? L"Copied" : L"Copy ID",
+        fg,
+        (float)modal_px(12, scale),
+        600,
+        alpha
+    );
+}
+
+static void
 confirm_ok(Platform *platform)
 {
     int start = g_arm_download;
@@ -661,6 +1000,8 @@ settings_modal_open(void)
     g_open = 1;
     g_block_mouse = 1;
     g_arm_download = 0;
+    g_page = SETTINGS_PAGE_USER;
+    g_lang_open = 0;
 }
 
 void
@@ -670,6 +1011,8 @@ settings_modal_open_for_download(void)
     g_open = 1;
     g_block_mouse = 1;
     g_arm_download = 1;
+    g_page = SETTINGS_PAGE_INSTALL;
+    g_lang_open = 0;
 }
 
 void
@@ -686,6 +1029,8 @@ settings_modal_close(void)
 void
 settings_modal_hide(void)
 {
+    int i;
+
     g_open = 0;
     g_anim = 0.0f;
     g_block_mouse = 0;
@@ -697,6 +1042,10 @@ settings_modal_hide(void)
     g_hover_browse = 0.0f;
     g_hover_lang = 0.0f;
     g_hover_ok = 0.0f;
+    g_hover_copy = 0.0f;
+    for (i = 0; i < SETTINGS_PAGE_COUNT; i++) {
+        g_hover_nav[i] = 0.0f;
+    }
 }
 
 int
@@ -717,9 +1066,6 @@ settings_modal_tick(Platform *platform, float dt)
 {
     SettingsLayout L;
     float s;
-    float x;
-    float y;
-    float inset;
     int mx;
     int my;
     int over_close;
@@ -728,10 +1074,13 @@ settings_modal_tick(Platform *platform, float dt)
     int over_ok;
     int over_card;
     int over_menu;
+    int over_copy;
+    int over_nav;
     int busy;
     int can_ok;
     int item;
     int selected;
+    int i;
     wchar_t path_w[96];
     const wchar_t *lang_w;
 
@@ -748,14 +1097,18 @@ settings_modal_tick(Platform *platform, float dt)
     mx = platform->mouse_x;
     my = platform->mouse_y;
     busy = is_busy(platform);
-    x = L.x;
-    y = L.y;
     can_ok = !busy && (!g_arm_download || has_dir(platform));
-    item = (g_open && g_lang_open) ? lang_item_at(&L, mx, my) : -1;
+    item = (g_open && g_lang_open && g_page == SETTINGS_PAGE_GENERAL) ? lang_item_at(&L, mx, my) : -1;
+    over_nav = nav_at(&L, mx, my);
     over_close = modal_hit(mx, my, L.close_x, L.close_y, L.close_s, L.close_s);
-    over_browse = !busy && modal_hit(mx, my, L.path_x, L.path_y, L.path_w, L.path_h);
-    over_lang = !busy && modal_hit(mx, my, L.lang_x, L.lang_y, L.lang_w, L.lang_h);
-    over_menu = g_lang_open && modal_hit(mx, my, L.menu_x, L.menu_y, L.menu_w, L.menu_h);
+    over_browse = !busy && g_page == SETTINGS_PAGE_INSTALL &&
+        modal_hit(mx, my, L.path_x, L.path_y, L.path_w, L.path_h);
+    over_lang = !busy && g_page == SETTINGS_PAGE_GENERAL &&
+        modal_hit(mx, my, L.lang_x, L.lang_y, L.lang_w, L.lang_h);
+    over_menu = g_lang_open && g_page == SETTINGS_PAGE_GENERAL &&
+        modal_hit(mx, my, L.menu_x, L.menu_y, L.menu_w, L.menu_h);
+    over_copy = g_page == SETTINGS_PAGE_USER &&
+        modal_hit(mx, my, L.copy_x, L.copy_y, L.copy_w, L.copy_h);
     if (g_lang_open && g_open && platform->mouse_wheel && (over_menu || over_lang)) {
         g_lang_scroll -= platform->mouse_wheel;
         clamp_lang_scroll();
@@ -779,71 +1132,100 @@ settings_modal_tick(Platform *platform, float dt)
             }
         }
     }
-    over_ok = can_ok && !g_lang_open && modal_hit(mx, my, L.ok_x, L.ok_y, L.ok_w, L.ok_h);
-    over_card = modal_hit(mx, my, x, y, L.w, L.h) || over_menu;
+    over_ok = can_ok && !g_lang_open && g_page == SETTINGS_PAGE_INSTALL &&
+        modal_hit(mx, my, L.ok_x, L.ok_y, L.ok_w, L.ok_h);
+    over_card = modal_hit(mx, my, L.x, L.y, L.w, L.h) || over_menu;
     g_hover_close = modal_approach(g_hover_close, (g_open && over_close) ? 1.0f : 0.0f, dt);
     g_hover_browse = modal_approach(g_hover_browse, (g_open && over_browse) ? 1.0f : 0.0f, dt);
     g_hover_lang = modal_approach(g_hover_lang, (g_open && (over_lang || g_lang_open)) ? 1.0f : 0.0f, dt);
     g_hover_ok = modal_approach(g_hover_ok, (g_open && over_ok) ? 1.0f : 0.0f, dt);
+    g_hover_copy = modal_approach(g_hover_copy, (g_open && over_copy) ? 1.0f : 0.0f, dt);
     g_over_item = item;
     g_hover_item = modal_approach(g_hover_item, item >= 0 ? 1.0f : 0.0f, dt);
+    for (i = 0; i < SETTINGS_PAGE_COUNT; i++) {
+        g_hover_nav[i] = modal_approach(g_hover_nav[i], (g_open && over_nav == i) ? 1.0f : 0.0f, dt);
+    }
 
     modal_draw_overlay(platform->hdc, L.overlay_w, L.overlay_h, g_anim);
-    inset = (float)modal_px(MODAL_INSET, s);
-    modal_draw_card(platform->hdc, x, y, L.w, L.h, g_anim, s);
-    modal_draw_title(
+    modal_draw_card(platform->hdc, L.x, L.y, L.w, L.h, g_anim, s);
+    draw_sidebar(platform, &L, g_anim, s);
+    icon_draw_label_alpha(
         platform->hdc,
-        x + inset,
-        y + (float)modal_px(16, s),
-        L.close_x - x - inset - (float)modal_px(8, s),
-        (float)modal_px(20, s),
-        g_arm_download ? L"Install folder" : L"Settings",
-        s,
-        g_anim
-    );
-    modal_draw_subtitle(
-        platform->hdc,
-        x + inset,
-        y + (float)modal_px(40, s),
-        L.w - inset * 2.0f,
-        (float)modal_px(32, s),
-        g_arm_download ? L"Choose folder and language, then press OK." : L"Install folder and game language.",
-        s,
-        g_anim
+        L.title_x,
+        L.title_y,
+        L.title_w,
+        L.title_h,
+        k_page_label[g_page],
+        theme_chrome()->title_color,
+        (float)modal_px(15, s),
+        600,
+        modal_alpha_local(g_anim)
     );
     modal_draw_close(platform->hdc, L.close_x, L.close_y, L.close_s, g_hover_close, g_anim);
 
-    {
-        int max_chars = (int)((L.browse_x - L.path_x - (float)modal_px(20, s)) /
-            ((float)modal_px(13, s) * 0.55f));
-        if (max_chars < 12) {
-            max_chars = 12;
-        }
-        if (max_chars > 95) {
-            max_chars = 95;
-        }
-        path_label(current_dir(platform), path_w, max_chars);
-    }
-    draw_path_field(platform, &L, path_w, g_hover_browse, busy, g_anim, s);
-    lang_w = current_lang_label(platform);
-    draw_lang_field(platform, &L, lang_w, g_hover_lang, g_lang_open, busy, g_anim, s);
-    selected = 0;
-    {
-        const char *cur = platform->install_language ? platform->install_language() : "";
-        int i;
-        for (i = 0; i < LANG_OPTION_COUNT; i++) {
-            if (cur && os_stricmp(cur, k_lang_steam[i]) == 0) {
-                selected = i;
-                break;
+    if (g_page == SETTINGS_PAGE_USER) {
+        draw_user_page(platform, &L, g_anim, s);
+    } else if (g_page == SETTINGS_PAGE_GENERAL) {
+        draw_section_label(
+            platform,
+            L.content_x,
+            L.content_y,
+            L.content_w,
+            (float)modal_px(20, s),
+            L"Game language",
+            s,
+            g_anim
+        );
+        lang_w = current_lang_label(platform);
+        draw_lang_field(platform, &L, lang_w, g_hover_lang, g_lang_open, busy, g_anim, s);
+        selected = 0;
+        {
+            const char *cur = platform->install_language ? platform->install_language() : "";
+            for (i = 0; i < LANG_OPTION_COUNT; i++) {
+                if (cur && os_stricmp(cur, k_lang_steam[i]) == 0) {
+                    selected = i;
+                    break;
+                }
             }
         }
-    }
-    if (g_lang_open && g_anim > 0.02f) {
-        draw_lang_menu(platform, &L, selected, item, g_anim, s);
-    }
-    draw_ok_pill(platform, &L, g_hover_ok, !can_ok, g_anim, s);
-
-    if (g_open) {
+        if (g_lang_open && g_anim > 0.02f) {
+            draw_lang_menu(platform, &L, selected, item, g_anim, s);
+        }
+        icon_draw_label_alpha(
+            platform->hdc,
+            L.content_x,
+            L.lang_y + L.lang_h + (g_lang_open ? L.menu_h + (float)modal_px(10, s) : (float)modal_px(10, s)),
+            L.content_w,
+            (float)modal_px(32, s),
+            L"Used when Dawn downloads the language depot.",
+            theme_chrome()->muted,
+            (float)modal_px(12, s),
+            600,
+            modal_alpha_local(g_anim)
+        );
+    } else {
+        draw_section_label(
+            platform,
+            L.content_x,
+            L.content_y,
+            L.content_w,
+            (float)modal_px(20, s),
+            L"Install folder",
+            s,
+            g_anim
+        );
+        {
+            int max_chars = (int)((L.browse_x - L.path_x - (float)modal_px(20, s)) /
+                ((float)modal_px(13, s) * 0.55f));
+            if (max_chars < 12) {
+                max_chars = 12;
+            }
+            if (max_chars > 95) {
+                max_chars = 95;
+            }
+            path_label(current_dir(platform), path_w, max_chars);
+        }
+        draw_path_field(platform, &L, path_w, g_hover_browse, busy, g_anim, s);
         if (busy) {
             wcscpy(g_status_w, L"Folder is locked while downloading.");
         } else if (g_arm_download && !has_dir(platform)) {
@@ -855,19 +1237,21 @@ settings_modal_tick(Platform *platform, float dt)
         } else {
             wcscpy(g_status_w, L"New downloads will go here.");
         }
+        icon_draw_label_alpha(
+            platform->hdc,
+            L.status_x,
+            L.status_y,
+            L.status_w,
+            L.status_h,
+            g_status_w,
+            theme_chrome()->muted,
+            (float)modal_px(12, s),
+            600,
+            modal_alpha_local(g_anim)
+        );
+        draw_ok_pill(platform, &L, g_hover_ok, !can_ok, g_anim, s);
     }
-    icon_draw_label_alpha(
-        platform->hdc,
-        L.status_x,
-        L.status_y,
-        L.status_w > 0.0f ? L.status_w : L.path_w,
-        L.status_h,
-        g_status_w[0] ? g_status_w : L"New downloads will go here.",
-        theme_chrome()->muted,
-        (float)modal_px(MODAL_SUB_PX, s),
-        400,
-        modal_alpha_local(g_anim)
-    );
+    draw_card_outline(platform, &L, g_anim, s);
 
     if (!g_open) {
         return;
@@ -878,7 +1262,7 @@ settings_modal_tick(Platform *platform, float dt)
         } else {
             settings_modal_close();
         }
-    } else if (platform->key == PLATFORM_KEY_ENTER && !g_lang_open) {
+    } else if (platform->key == PLATFORM_KEY_ENTER && !g_lang_open && g_page == SETTINGS_PAGE_INSTALL) {
         confirm_ok(platform);
     }
     if (g_block_mouse) {
@@ -889,7 +1273,11 @@ settings_modal_tick(Platform *platform, float dt)
         return;
     }
     if (platform->mouse_pressed) {
-        if (g_lang_open && over_lang_thumb(&L, mx, my)) {
+        if (over_nav >= 0) {
+            g_page = over_nav;
+            g_lang_open = 0;
+            g_lang_drag = 0;
+        } else if (g_lang_open && over_lang_thumb(&L, mx, my)) {
             g_lang_drag = 1;
             g_lang_drag_y = (float)my;
             g_lang_drag_scroll = g_lang_scroll;
@@ -907,7 +1295,6 @@ settings_modal_tick(Platform *platform, float dt)
             g_lang_drag = 0;
             if (g_lang_open) {
                 const char *cur = platform->install_language ? platform->install_language() : "";
-                int i;
                 reveal_lang(0);
                 for (i = 0; i < LANG_OPTION_COUNT; i++) {
                     if (cur && os_stricmp(cur, k_lang_steam[i]) == 0) {
@@ -919,6 +1306,13 @@ settings_modal_tick(Platform *platform, float dt)
         } else if (g_lang_open) {
             g_lang_open = 0;
             g_lang_drag = 0;
+        } else if (over_copy) {
+            if (user_id_copy()) {
+                g_copied_ms = os_tick_ms();
+                if (g_copied_ms == 0) {
+                    g_copied_ms = 1;
+                }
+            }
         } else if (over_close || !over_card) {
             settings_modal_close();
         } else if (over_browse) {

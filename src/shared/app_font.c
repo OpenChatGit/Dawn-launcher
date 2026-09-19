@@ -443,20 +443,16 @@ draw_cps(
     bold = weight >= 600;
     pen = x;
     for (i = 0; i < n; i++) {
-        float frac = pen - floorf(pen);
-        int sub = (int)(frac * (float)FONT_SUB);
+        int sub = 0;
         Glyph *g;
         int gx;
         int gy;
         int row;
         int col;
-        if (sub >= FONT_SUB) {
-            sub = FONT_SUB - 1;
-        }
         g = glyph_get(face, cps[i], pxi, bold, sub);
         if (g && g->cover && g->w > 0 && g->h > 0) {
-            gx = (int)floorf(pen + g->xoff);
-            gy = (int)floorf(baseline + g->yoff);
+            gx = (int)floorf(pen + g->xoff + 0.5f);
+            gy = (int)floorf(baseline + g->yoff + 0.5f);
             for (row = 0; row < g->h; row++) {
                 for (col = 0; col < g->w; col++) {
                     int px0 = gx + col;
@@ -518,16 +514,24 @@ app_font_draw_wide(
     if (!face || !text || w < 1.0f || h < 1.0f || px < 1.0f) {
         return;
     }
+    x = floorf(x + 0.5f);
+    y = floorf(y + 0.5f);
+    w = floorf(w + 0.5f);
+    h = floorf(h + 0.5f);
+    px = floorf(px + 0.5f);
+    if (px < 1.0f) {
+        px = 1.0f;
+    }
     n = wide_to_cps(text, cps, 256);
     tw = measure_cps(face, cps, n, px);
     stbtt_GetFontVMetrics(&face->info, &ascent, &descent, &gap);
     scale = stbtt_ScaleForPixelHeight(&face->info, px);
-    baseline = y + (h - (float)(ascent - descent) * scale) * 0.5f + (float)ascent * scale;
+    baseline = floorf(y + (h - (float)(ascent - descent) * scale) * 0.5f + (float)ascent * scale + 0.5f);
     pen_x = x;
     if (align == APP_FONT_ALIGN_CENTER) {
-        pen_x = x + (w - tw) * 0.5f;
+        pen_x = floorf(x + (w - tw) * 0.5f + 0.5f);
     } else if (align == APP_FONT_ALIGN_RIGHT) {
-        pen_x = x + w - tw;
+        pen_x = floorf(x + w - tw + 0.5f);
     }
     draw_cps(plot, user, pen_x, baseline, x + w, cps, n, px, weight, rgb, alpha, 0.0f);
 }
@@ -558,9 +562,15 @@ app_font_draw_utf8(
     if (!face || !text || px < 1.0f) {
         return;
     }
+    x = floorf(x + 0.5f);
+    y = floorf(y + 0.5f);
+    px = floorf(px + 0.5f);
+    if (px < 1.0f) {
+        px = 1.0f;
+    }
     n = utf8_to_cps(text, cps, 256);
     stbtt_GetFontVMetrics(&face->info, &ascent, &descent, &gap);
     scale = stbtt_ScaleForPixelHeight(&face->info, px);
-    baseline = y + (float)ascent * scale;
+    baseline = floorf(y + (float)ascent * scale + 0.5f);
     draw_cps(plot, user, x, baseline, 0.0f, cps, n, px, weight, rgb, alpha, (float)tracking);
 }

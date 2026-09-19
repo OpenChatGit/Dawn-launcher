@@ -17,6 +17,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <wchar.h>
 #include <windowsx.h>
 #include <dwmapi.h>
 
@@ -27,6 +28,8 @@
 
 static HostWindow *g_window;
 static int g_text_cursor;
+static void apply_dpi_scale(HostWindow *window, float scale);
+static float scale_from_dpi(UINT dpi);
 
 static void
 force_english_ui(void)
@@ -302,6 +305,27 @@ window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
             }
         }
         return 0;
+    case WM_DPICHANGED:
+        if (window && lparam) {
+            RECT *hint = (RECT *)lparam;
+            int w = hint->right - hint->left;
+            int h = hint->bottom - hint->top;
+            apply_dpi_scale(window, scale_from_dpi(HIWORD(wparam)));
+            SetWindowPos(
+                hwnd,
+                NULL,
+                hint->left,
+                hint->top,
+                w,
+                h,
+                SWP_NOZORDER | SWP_NOACTIVATE
+            );
+            if (w >= 8 && h >= 8) {
+                ensure_backbuffer(window, w, h);
+                window_apply_round(window);
+            }
+        }
+        return 0;
     case WM_MOUSEMOVE:
         if (window) {
             window->mouse_x = GET_X_LPARAM(lparam);
@@ -569,12 +593,12 @@ platform_draw_line(int x0, int y0, int x1, int y1, uint32_t color, int width)
     DeleteObject(pen);
 }
 
+static void platform_draw_label(int x, int y, const char *text, uint32_t color, int px, int weight, int tracking);
+
 static void
 platform_draw_text(int x, int y, const char *text, uint32_t color)
 {
-    SetBkMode(g_window->back_dc, TRANSPARENT);
-    SetTextColor(g_window->back_dc, to_color(color));
-    TextOutA(g_window->back_dc, x, y, text, (int)strlen(text));
+    platform_draw_label(x, y, text, color, 13, 400, 0);
 }
 
 typedef struct CachedFont {
@@ -595,15 +619,17 @@ cached_font(int px, int weight)
         }
     }
     HFONT font = CreateFontW(
-        -px, 0, 0, 0, weight, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"IBM Plex Sans"
+        -px, 0, 0, 0, weight >= 600 ? FW_SEMIBOLD : weight,
+        FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, VARIABLE_PITCH | FF_SWISS,
+        weight >= 600 ? L"Segoe UI Semibold" : L"Segoe UI"
     );
     if (!font) {
         font = CreateFontW(
             -px, 0, 0, 0, weight, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"
+            DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, VARIABLE_PITCH | FF_SWISS, L"Segoe UI"
         );
     }
     if (!font) {
@@ -632,13 +658,22 @@ free_cached_fonts(void)
 static void
 platform_measure_label(const char *text, int px, int weight, int *w, int *h, int *ascent)
 {
-    HFONT font = cached_font(px, weight);
-    HFONT old = SelectObject(g_window->back_dc, font);
+    HFONT font;
+    HFONT old;
     TEXTMETRIC tm;
     SIZE size = {0, 0};
+    wchar_t wide[256];
+
+    if (px < 1) {
+        px = 1;
+    }
+    font = cached_font(px, weight);
+    old = SelectObject(g_window->back_dc, font);
+    SetGraphicsMode(g_window->back_dc, GM_COMPATIBLE);
+    SetMapMode(g_window->back_dc, MM_TEXT);
     GetTextMetrics(g_window->back_dc, &tm);
-    if (text && text[0]) {
-        GetTextExtentPoint32A(g_window->back_dc, text, (int)strlen(text), &size);
+    if (text && text[0] && os_utf8_to_wide(text, wide, 256) > 0) {
+        GetTextExtentPoint32W(g_window->back_dc, wide, (int)wcslen(wide), &size);
     }
     if (w) {
         *w = size.cx;
@@ -655,16 +690,28 @@ platform_measure_label(const char *text, int px, int weight, int *w, int *h, int
 static void
 platform_draw_label(int x, int y, const char *text, uint32_t color, int px, int weight, int tracking)
 {
+    wchar_t wide[256];
+    HFONT font;
+    HFONT old;
+
     if (!text || !text[0]) {
         return;
     }
-    HFONT font = cached_font(px, weight);
-    HFONT old = SelectObject(g_window->back_dc, font);
+    if (px < 1) {
+        px = 1;
+    }
+    if (os_utf8_to_wide(text, wide, 256) <= 0) {
+        return;
+    }
+    font = cached_font(px, weight);
+    old = SelectObject(g_window->back_dc, font);
+    SetGraphicsMode(g_window->back_dc, GM_COMPATIBLE);
+    SetMapMode(g_window->back_dc, MM_TEXT);
     SetBkMode(g_window->back_dc, TRANSPARENT);
     SetTextColor(g_window->back_dc, to_color(color));
     SetTextAlign(g_window->back_dc, TA_LEFT | TA_TOP);
     SetTextCharacterExtra(g_window->back_dc, tracking > 0 ? tracking : 0);
-    TextOutA(g_window->back_dc, x, y, text, (int)strlen(text));
+    TextOutW(g_window->back_dc, x, y, wide, (int)wcslen(wide));
     SetTextCharacterExtra(g_window->back_dc, 0);
     SelectObject(g_window->back_dc, old);
 }
@@ -695,58 +742,242 @@ platform_log(const char *msg)
     debug_log("%s", msg ? msg : "");
 }
 
-static void
-enable_dpi_awareness(void)
+#ifndef WM_DPICHANGED
+#define WM_DPICHANGED 0x02E0
+#endif
+
+#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((HANDLE)(intptr_t)-4)
+#endif
+#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE ((HANDLE)(intptr_t)-3)
+#endif
+
+static float
+clamp_dpi_scale(float scale)
 {
-    HMODULE user32 = GetModuleHandleW(L"user32.dll");
-    if (!user32) {
-        return;
+    if (scale < 0.75f) {
+        return 1.0f;
     }
-    typedef BOOL (WINAPI *SetDpiAwarenessContextFn)(HANDLE);
-    SetDpiAwarenessContextFn set_ctx = NULL;
-    FARPROC proc = GetProcAddress(user32, "SetProcessDpiAwarenessContext");
-    memcpy(&set_ctx, &proc, sizeof(set_ctx));
-    if (set_ctx) {
-        set_ctx((HANDLE)(intptr_t)-4);
+    if (scale > 4.0f) {
+        return 4.0f;
     }
+    return scale;
 }
 
 static float
-system_dpi_scale(void)
+scale_from_dpi(UINT dpi)
+{
+    if (dpi < 72) {
+        return 1.0f;
+    }
+    return clamp_dpi_scale((float)dpi / 96.0f);
+}
+
+static UINT
+monitor_effective_dpi(HMONITOR monitor)
+{
+    HMODULE shcore;
+    UINT x = 0;
+    UINT y = 0;
+
+    if (!monitor) {
+        return 0;
+    }
+    shcore = GetModuleHandleW(L"shcore.dll");
+    if (!shcore) {
+        shcore = LoadLibraryW(L"shcore.dll");
+    }
+    if (shcore) {
+        typedef HRESULT (WINAPI *GetDpiForMonitorFn)(HMONITOR, int, UINT *, UINT *);
+        GetDpiForMonitorFn get_dpi = NULL;
+        FARPROC proc = GetProcAddress(shcore, "GetDpiForMonitor");
+        memcpy(&get_dpi, &proc, sizeof(get_dpi));
+        if (get_dpi && get_dpi(monitor, 0, &x, &y) == S_OK && x > 0) {
+            return x;
+        }
+    }
+    return 0;
+}
+
+static UINT
+system_dpi(void)
 {
     HMODULE user32 = GetModuleHandleW(L"user32.dll");
     if (user32) {
         typedef UINT (WINAPI *GetDpiForSystemFn)(void);
-        GetDpiForSystemFn get_dpi = NULL;
+        GetDpiForSystemFn get_sys = NULL;
         FARPROC proc = GetProcAddress(user32, "GetDpiForSystem");
-        memcpy(&get_dpi, &proc, sizeof(get_dpi));
-        if (get_dpi) {
-            UINT dpi = get_dpi();
+        memcpy(&get_sys, &proc, sizeof(get_sys));
+        if (get_sys) {
+            UINT dpi = get_sys();
             if (dpi > 0) {
-                return (float)dpi / 96.0f;
+                return dpi;
             }
         }
     }
-    return 1.0f;
+    {
+        HDC hdc = GetDC(NULL);
+        if (hdc) {
+            int dpi = GetDeviceCaps(hdc, LOGPIXELSX);
+            ReleaseDC(NULL, hdc);
+            if (dpi > 0) {
+                return (UINT)dpi;
+            }
+        }
+    }
+    return 96;
+}
+
+static UINT
+query_dpi(HWND hwnd, HMONITOR monitor)
+{
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (hwnd && user32) {
+        typedef UINT (WINAPI *GetDpiForWindowFn)(HWND);
+        GetDpiForWindowFn get_win = NULL;
+        FARPROC proc = GetProcAddress(user32, "GetDpiForWindow");
+        memcpy(&get_win, &proc, sizeof(get_win));
+        if (get_win) {
+            UINT dpi = get_win(hwnd);
+            if (dpi > 0) {
+                return dpi;
+            }
+        }
+    }
+    if (!monitor && hwnd) {
+        monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    }
+    {
+        UINT dpi = monitor_effective_dpi(monitor);
+        if (dpi > 0) {
+            return dpi;
+        }
+    }
+    return system_dpi();
+}
+
+void
+window_enable_dpi_awareness(void)
+{
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32) {
+        typedef BOOL (WINAPI *SetDpiAwarenessContextFn)(HANDLE);
+        SetDpiAwarenessContextFn set_ctx = NULL;
+        FARPROC proc = GetProcAddress(user32, "SetProcessDpiAwarenessContext");
+        memcpy(&set_ctx, &proc, sizeof(set_ctx));
+        if (set_ctx) {
+            if (set_ctx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
+                return;
+            }
+            if (set_ctx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE)) {
+                return;
+            }
+        }
+    }
+    {
+        HMODULE shcore = GetModuleHandleW(L"shcore.dll");
+        if (!shcore) {
+            shcore = LoadLibraryW(L"shcore.dll");
+        }
+        if (shcore) {
+            typedef HRESULT (WINAPI *SetProcessDpiAwarenessFn)(int);
+            SetProcessDpiAwarenessFn set = NULL;
+            FARPROC proc = GetProcAddress(shcore, "SetProcessDpiAwareness");
+            memcpy(&set, &proc, sizeof(set));
+            if (set && set(2) == S_OK) {
+                return;
+            }
+        }
+    }
+    if (user32) {
+        typedef BOOL (WINAPI *SetProcessDPIAwareFn)(void);
+        SetProcessDPIAwareFn set = NULL;
+        FARPROC proc = GetProcAddress(user32, "SetProcessDPIAware");
+        memcpy(&set, &proc, sizeof(set));
+        if (set) {
+            set();
+        }
+    }
+}
+
+static void
+apply_dpi_scale(HostWindow *window, float scale)
+{
+    int px;
+
+    if (!window) {
+        return;
+    }
+    window->dpi_scale = clamp_dpi_scale(scale);
+    window->corner_radius = 16.0f * window->dpi_scale;
+    px = (int)(13.0f * window->dpi_scale + 0.5f);
+    if (px < 11) {
+        px = 11;
+    }
+    if (!window->back_dc) {
+        return;
+    }
+    if (window->old_font) {
+        SelectObject(window->back_dc, window->old_font);
+        window->old_font = NULL;
+    }
+    if (window->font) {
+        DeleteObject(window->font);
+        window->font = NULL;
+    }
+    window->font = CreateFontW(
+        -px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, VARIABLE_PITCH | FF_SWISS, L"Segoe UI"
+    );
+    if (window->font) {
+        window->old_font = SelectObject(window->back_dc, window->font);
+    }
 }
 
 int
 window_create(HostWindow *window, const char *title, int width, int height)
 {
+    HMONITOR monitor;
+    MONITORINFO mi;
+    POINT cursor;
+    float scale;
+    int x;
+    int y;
+    int logical_w = width;
+    int logical_h = height;
+
     memset(window, 0, sizeof(*window));
     g_window = window;
     window->running = 1;
     force_english_ui();
-    enable_dpi_awareness();
-    window->dpi_scale = system_dpi_scale();
-    if (window->dpi_scale < 0.75f) {
-        window->dpi_scale = 1.0f;
+    window_enable_dpi_awareness();
+
+    cursor.x = 0;
+    cursor.y = 0;
+    if (!GetCursorPos(&cursor)) {
+        cursor.x = 0;
+        cursor.y = 0;
     }
-    width = (int)(width * window->dpi_scale + 0.5f);
-    height = (int)(height * window->dpi_scale + 0.5f);
+    monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+    scale = scale_from_dpi(query_dpi(NULL, monitor));
+    width = (int)((float)logical_w * scale + 0.5f);
+    height = (int)((float)logical_h * scale + 0.5f);
     window->width = width;
     window->height = height;
-    window->corner_radius = 16.0f * window->dpi_scale;
+    apply_dpi_scale(window, scale);
+
+    memset(&mi, 0, sizeof(mi));
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(monitor, &mi)) {
+        mi.rcWork.left = 0;
+        mi.rcWork.top = 0;
+        mi.rcWork.right = GetSystemMetrics(SM_CXSCREEN);
+        mi.rcWork.bottom = GetSystemMetrics(SM_CYSCREEN);
+    }
+    x = mi.rcWork.left + (mi.rcWork.right - mi.rcWork.left - width) / 2;
+    y = mi.rcWork.top + (mi.rcWork.bottom - mi.rcWork.top - height) / 2;
 
     WNDCLASSEXW wc = {0};
     wc.cbSize = sizeof(wc);
@@ -765,11 +996,6 @@ window_create(HostWindow *window, const char *title, int width, int height)
 
     wchar_t wide_title[256];
     MultiByteToWideChar(CP_UTF8, 0, title, -1, wide_title, 256);
-
-    int screen_w = GetSystemMetrics(SM_CXSCREEN);
-    int screen_h = GetSystemMetrics(SM_CYSCREEN);
-    int x = (screen_w - width) / 2;
-    int y = (screen_h - height) / 2;
 
     window->hwnd = CreateWindowExW(
         WS_EX_APPWINDOW,
@@ -794,6 +1020,18 @@ window_create(HostWindow *window, const char *title, int width, int height)
     window->hdc = GetDC(window->hwnd);
     window->back_dc = CreateCompatibleDC(window->hdc);
     ensure_backbuffer(window, width, height);
+    {
+        float hwnd_scale = scale_from_dpi(query_dpi(window->hwnd, NULL));
+        if (hwnd_scale > 0.1f && (hwnd_scale < scale - 0.01f || hwnd_scale > scale + 0.01f)) {
+            int new_w = (int)((float)logical_w * hwnd_scale + 0.5f);
+            int new_h = (int)((float)logical_h * hwnd_scale + 0.5f);
+            apply_dpi_scale(window, hwnd_scale);
+            SetWindowPos(window->hwnd, NULL, 0, 0, new_w, new_h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            ensure_backbuffer(window, new_w, new_h);
+        } else {
+            apply_dpi_scale(window, scale);
+        }
+    }
 
     {
         char root[MAX_PATH];
@@ -801,19 +1039,6 @@ window_create(HostWindow *window, const char *title, int width, int height)
         app_font_set_root(root);
         app_font_register();
     }
-    window->font = CreateFontW(
-        -13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"IBM Plex Sans"
-    );
-    if (!window->font) {
-        window->font = CreateFontW(
-            -13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"
-        );
-    }
-    window->old_font = SelectObject(window->back_dc, window->font);
     window->ready = 1;
     window_apply_round(window);
     return 1;

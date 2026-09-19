@@ -14,10 +14,11 @@
 #define BTN_FILL_HOVER 0xf3f5f8
 #define BTN_PROGRESS 0xe4e9f0
 #define BTN_TEXT 0x111827
-#define MENU_W 236.0f
-#define MENU_INSET 10.0f
-#define MENU_ITEM_H 34.0f
-#define MENU_ITEM_GAP 6.0f
+#define MENU_W 208.0f
+#define MENU_INSET 8.0f
+#define MENU_ITEM_H 30.0f
+#define MENU_ITEM_GAP 4.0f
+#define MENU_RADIUS 10.0f
 
 typedef struct InstallLayout {
     float x;
@@ -87,6 +88,12 @@ static float g_caret;
 static char g_hint_key[192];
 static float g_hint_need;
 static float g_hint_px_key;
+
+static float
+px_snap(float v)
+{
+    return floorf(v + 0.5f);
+}
 
 static int
 hit(int mx, int my, float x, float y, float w, float h)
@@ -499,7 +506,10 @@ layout(Platform *platform, InstallLayout *out, const char *label)
     if (out->icon_s > out->h * 0.48f) {
         out->icon_s = out->h * 0.48f;
     }
-    out->text_px = 13.0f * dpi;
+    out->text_px = (float)((int)(13.0f * dpi + 0.5f));
+    if (out->text_px < 1.0f) {
+        out->text_px = 1.0f;
+    }
     {
         static char measure_key[32];
         static float measure_px;
@@ -601,7 +611,7 @@ layout(Platform *platform, InstallLayout *out, const char *label)
         if (out->menu_x < inset) {
             out->menu_x = inset;
         }
-        out->menu_y = out->y - 8.0f * dpi - out->menu_h;
+        out->menu_y = out->y - 6.0f * dpi - out->menu_h;
         if (out->menu_y < inset) {
             out->menu_y = inset;
         }
@@ -624,6 +634,19 @@ layout(Platform *platform, InstallLayout *out, const char *label)
         }
         out->full_y = out->show_full ? y : -1000.0f;
         out->uninstall_y = out->show_plain ? y : -1000.0f;
+        out->menu_x = px_snap(out->menu_x);
+        out->menu_y = px_snap(out->menu_y);
+        out->menu_w = px_snap(out->menu_w);
+        out->menu_h = px_snap(out->menu_h);
+        out->item_x = px_snap(out->item_x);
+        out->item_w = px_snap(out->item_w);
+        out->item_h = px_snap(out->item_h);
+        out->verify_y = px_snap(out->verify_y);
+        out->sim_y = px_snap(out->sim_y);
+        out->dawn_y = px_snap(out->dawn_y);
+        out->sunrise_y = px_snap(out->sunrise_y);
+        out->full_y = px_snap(out->full_y);
+        out->uninstall_y = px_snap(out->uninstall_y);
     }
 }
 
@@ -683,6 +706,37 @@ layout_hint(Platform *platform, InstallLayout *out, const char *hint)
 }
 
 static void
+draw_menu_card(Platform *platform, float x, float y, float w, float h, float open)
+{
+    const ThemeChrome *chrome = theme_chrome();
+    float dpi = platform->dpi_scale > 0.1f ? platform->dpi_scale : 1.0f;
+    float radius = px_snap(MENU_RADIUS * dpi);
+    int alpha = (int)(open * 255.0f);
+
+    icon_round_rect(platform->hdc, px_snap(x), px_snap(y + 2.0f * dpi), px_snap(w), px_snap(h), radius, 0x000000, alpha * 40 / 255);
+    icon_round_rect(platform->hdc, px_snap(x), px_snap(y), px_snap(w), px_snap(h), radius, modal_panel_color(), alpha);
+    icon_round_stroke(platform->hdc, px_snap(x), px_snap(y), px_snap(w), px_snap(h), radius, chrome->muted, alpha * 28 / 255, 1.0f);
+}
+
+static void
+draw_menu_divider(Platform *platform, float x, float y, float w, float open)
+{
+    const ThemeChrome *chrome = theme_chrome();
+    float dpi = platform->dpi_scale > 0.1f ? platform->dpi_scale : 1.0f;
+
+    icon_fill_rect(
+        platform->hdc,
+        x,
+        y,
+        w,
+        1.0f,
+        chrome->muted,
+        (int)(open * 28.0f)
+    );
+    (void)dpi;
+}
+
+static void
 draw_menu_item(
     Platform *platform,
     float x,
@@ -701,39 +755,32 @@ draw_menu_item(
     const ThemeChrome *chrome = theme_chrome();
     float dpi = platform->dpi_scale > 0.1f ? platform->dpi_scale : 1.0f;
     float use_hover = disabled ? 0.0f : (pressed ? 1.0f : hover);
-    float icon_s = 16.0f * dpi;
-    float icon_cx = x + 12.0f * dpi + icon_s * 0.5f;
-    float text_x = x + 12.0f * dpi + icon_s + 8.0f * dpi;
-    float text_w = x + w - text_x - 10.0f * dpi;
-    uint32_t fill = modal_button_fill(use_hover);
-    uint32_t stroke = use_hover > 0.2f ? chrome->hover : chrome->muted;
-    uint32_t fg = disabled ? chrome->muted : (use_hover > 0.2f ? chrome->hover : chrome->title_color);
-    int alpha = (int)(open * (disabled ? 140.0f : 255.0f));
+    float pad = px_snap(10.0f * dpi);
+    float icon_s = px_snap(16.0f * dpi);
+    float text_px = px_snap(13.0f * dpi);
+    float icon_cx = px_snap(x + pad + icon_s * 0.5f);
+    float text_x = px_snap(x + pad + icon_s + 8.0f * dpi);
+    float text_w = px_snap(x + w - text_x - pad);
+    float radius = px_snap(7.0f * dpi);
+    uint32_t fg = disabled ? chrome->muted : chrome->title_color;
+    int alpha = open >= 0.98f ? (disabled ? 160 : 255) : (int)(open * (disabled ? 130.0f : 255.0f));
 
-    if (danger && !disabled && use_hover > 0.01f) {
-        uint32_t red = chrome->close ? chrome->close : 0xe81123;
-        int tint = (int)(use_hover * 255.0f);
-        fill = modal_mix(fill, red, 48 + tint * 72 / 255);
-        stroke = modal_mix(stroke, red, tint);
-        fg = modal_mix(fg, red, tint);
+    if (use_hover > 0.01f) {
+        uint32_t fill = modal_mix(modal_panel_color(), 0xffffff, 10 + (int)(use_hover * 16.0f));
+        if (danger && !disabled) {
+            uint32_t red = chrome->close ? chrome->close : 0xe81123;
+            fill = modal_mix(fill, red, 28 + (int)(use_hover * 50.0f));
+            fg = modal_mix(fg, red, 80 + (int)(use_hover * 120.0f));
+        }
+        icon_round_rect(platform->hdc, x, y, w, h, radius, fill, (int)(open * use_hover * 255.0f));
+    } else if (danger && !disabled) {
+        fg = modal_mix(fg, chrome->close ? chrome->close : 0xe81123, 36);
     }
 
-    icon_round_rect(platform->hdc, x, y, w, h, h * 0.28f, fill, (int)(open * 255.0f));
-    icon_round_stroke(
-        platform->hdc,
-        x,
-        y,
-        w,
-        h,
-        h * 0.28f,
-        stroke,
-        (int)(open * (28.0f + use_hover * 36.0f)),
-        1.0f
-    );
     icon_set_alpha(alpha);
-    icon_draw(platform->hdc, icon, icon_cx, y + h * 0.5f, icon_s, fg, 0.0f);
+    icon_draw(platform->hdc, icon, icon_cx, px_snap(y + h * 0.5f), icon_s, fg, 0.0f);
     icon_set_alpha(255);
-    icon_draw_label_alpha(platform->hdc, text_x, y, text_w, h, label, fg, 13.0f * dpi, 600, alpha);
+    icon_draw_label_alpha(platform->hdc, text_x, px_snap(y), px_snap(text_w), px_snap(h), label, fg, text_px, 600, alpha);
 }
 
 int
@@ -970,7 +1017,9 @@ install_button_tick(Platform *platform, float dt)
     );
 
     if (g_menu > 0.02f) {
-        modal_draw_card(platform->hdc, L.menu_x, L.menu_y, L.menu_w, L.menu_h, g_menu, platform->dpi_scale);
+        float dpi = platform->dpi_scale > 0.1f ? platform->dpi_scale : 1.0f;
+        float danger_y = -1.0f;
+        draw_menu_card(platform, L.menu_x, L.menu_y, L.menu_w, L.menu_h, g_menu);
         draw_menu_item(
             platform,
             L.item_x,
@@ -983,7 +1032,7 @@ install_button_tick(Platform *platform, float dt)
             busy || stop,
             0,
             ICON_SEARCH,
-            L"Check Game Integrity"
+            L"Verify files"
         );
         if (L.show_sim) {
             draw_menu_item(
@@ -999,6 +1048,24 @@ install_button_tick(Platform *platform, float dt)
                 0,
                 ICON_DOWNLOAD,
                 L"Simulate download"
+            );
+        }
+        if (L.show_dawn) {
+            danger_y = L.dawn_y;
+        } else if (L.show_sunrise) {
+            danger_y = L.sunrise_y;
+        } else if (L.show_full) {
+            danger_y = L.full_y;
+        } else if (L.show_plain) {
+            danger_y = L.uninstall_y;
+        }
+        if (danger_y > 0.0f) {
+            draw_menu_divider(
+                platform,
+                L.item_x + 4.0f * dpi,
+                danger_y - MENU_ITEM_GAP * dpi * 0.5f,
+                L.item_w - 8.0f * dpi,
+                g_menu
             );
         }
         if (L.show_dawn) {
@@ -1046,7 +1113,7 @@ install_button_tick(Platform *platform, float dt)
                 0,
                 1,
                 ICON_X,
-                g_confirm == 3 ? L"Confirm uninstall" : L"Uninstall Full"
+                g_confirm == 3 ? L"Confirm uninstall" : L"Uninstall all"
             );
         }
         if (L.show_plain) {
