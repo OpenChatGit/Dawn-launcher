@@ -50,6 +50,7 @@ set(HOST_SRC
     src/host/hot_reload.c
     src/host/install_job.c
     src/host/self_update.c
+    src/host/app_icon.c
     src/host/steam_auth.cpp
     src/shared/os.c
     src/shared/user_id.c
@@ -99,10 +100,15 @@ set_target_properties(app_logic PROPERTIES
 add_executable(host ${HOST_SRC})
 if(WIN32)
     file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/src/host/app.manifest" APP_MANIFEST_PATH)
+    file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/assets/Dawn_app.ico" APP_ICON_PATH)
     configure_file(
         ${CMAKE_SOURCE_DIR}/src/host/app.rc.in
         ${CMAKE_BINARY_DIR}/generated/app.rc
         @ONLY
+    )
+    set_source_files_properties(
+        ${CMAKE_BINARY_DIR}/generated/app.rc
+        PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/assets/Dawn_app.ico"
     )
     target_sources(host PRIVATE ${CMAKE_BINARY_DIR}/generated/app.rc)
 endif()

@@ -1,4 +1,5 @@
 #include "window.h"
+#include "app_icon.h"
 #include "debug_console.h"
 #include "install_job.h"
 #include "media.h"
@@ -984,6 +985,22 @@ window_create(HostWindow *window, const char *title, int width, int height)
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = window_proc;
     wc.hInstance = GetModuleHandleW(NULL);
+    wc.hIcon = (HICON)LoadImageW(
+        wc.hInstance,
+        MAKEINTRESOURCEW(1),
+        IMAGE_ICON,
+        GetSystemMetrics(SM_CXICON),
+        GetSystemMetrics(SM_CYICON),
+        LR_DEFAULTCOLOR
+    );
+    wc.hIconSm = (HICON)LoadImageW(
+        wc.hInstance,
+        MAKEINTRESOURCEW(1),
+        IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON),
+        GetSystemMetrics(SM_CYSMICON),
+        LR_DEFAULTCOLOR
+    );
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = CreateSolidBrush(RGB(1, 6, 19));
     wc.lpszClassName = L"AppHostWindow";
@@ -1015,6 +1032,7 @@ window_create(HostWindow *window, const char *title, int width, int height)
     if (!window->hwnd) {
         return 0;
     }
+    app_icon_apply_win(window->hwnd, wc.hInstance);
     RegisterHotKey(window->hwnd, 12, 0, VK_F12);
 
     window->hdc = GetDC(window->hwnd);

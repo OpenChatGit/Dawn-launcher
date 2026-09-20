@@ -12,9 +12,9 @@ fi
 
 if [ "$KIND" = "official" ]; then
     cat > "$OUT" <<EOF
-Self-update no longer dies with "Update download failed" when GitHub's CDN resets HTTP/2. The downloader now uses HTTP/1.1 and retries.
+The launcher now uses the Dawn sun icon everywhere: the Windows exe, the taskbar, Alt-Tab, and the Linux window.
 
-The Update button shows Starting, then percent as the zip arrives, then Installing.
+Linux packages also ship \`dawn.desktop\` and \`dawn.png\`.
 EOF
 else
     cat > "$OUT" <<EOF

@@ -66,6 +66,16 @@ if [ -f "$ROOT/packaging/Dawn" ] && [ "$PLATFORM" = "linux" ]; then
     cp "$ROOT/packaging/Dawn" "$STAGE/Dawn.sh"
     chmod +x "$STAGE/Dawn.sh"
 fi
+if [ "$PLATFORM" = "linux" ]; then
+    if [ -f "$ROOT/packaging/dawn.desktop" ]; then
+        cp "$ROOT/packaging/dawn.desktop" "$STAGE/dawn.desktop"
+    fi
+    if [ -f "$ROOT/assets/Dawn_app.png" ]; then
+        mkdir -p "$STAGE/share/icons/hicolor/512x512/apps"
+        cp "$ROOT/assets/Dawn_app.png" "$STAGE/share/icons/hicolor/512x512/apps/dawn.png"
+        cp "$ROOT/assets/Dawn_app.png" "$STAGE/dawn.png"
+    fi
+fi
 if [ "$PLATFORM" = "linux" ] && [ -f "$ROOT/scripts/launch-destiny.sh" ]; then
     mkdir -p "$STAGE/scripts"
     cp "$ROOT/scripts/launch-destiny.sh" "$STAGE/scripts/launch-destiny.sh"

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Dawn
+Comment=Dawn launcher
+Exec=Dawn
+Icon=dawn
+Terminal=false
+Categories=Game;
+StartupWMClass=Dawn

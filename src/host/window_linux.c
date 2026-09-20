@@ -1,4 +1,5 @@
 #include "window.h"
+#include "app_icon.h"
 #include "debug_console.h"
 #include "install_job.h"
 #include "media.h"
@@ -434,6 +435,7 @@ window_create(HostWindow *window, const char *title, int width, int height)
     XSelectInput(dpy, win, ExposureMask | KeyPressMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | StructureNotifyMask);
     Atom wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(dpy, win, &wm_delete, 1);
+    app_icon_apply_x11(dpy, (unsigned long)win);
     XMapWindow(dpy, win);
 
     window->display = dpy;
