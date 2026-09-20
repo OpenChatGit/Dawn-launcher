@@ -53,6 +53,14 @@ typedef struct SettingsLayout {
     float browse_y;
     float browse_w;
     float browse_h;
+    float exe_x;
+    float exe_y;
+    float exe_w;
+    float exe_h;
+    float exe_browse_x;
+    float exe_browse_y;
+    float exe_browse_w;
+    float exe_browse_h;
     float lang_x;
     float lang_y;
     float lang_w;
@@ -97,6 +105,7 @@ static float g_lang_drag_y;
 static float g_anim;
 static float g_hover_close;
 static float g_hover_browse;
+static float g_hover_exe;
 static float g_hover_lang;
 static float g_hover_ok;
 static float g_hover_item;
@@ -166,7 +175,7 @@ layout_modal(Platform *platform, SettingsLayout *out)
     out->overlay_w = (float)platform->width;
     out->overlay_h = (float)platform->height;
     out->w = (float)modal_px(560, s);
-    out->h = (float)modal_px(392, s);
+    out->h = (float)modal_px(428, s);
     if (out->w > (float)platform->width - 32.0f) {
         out->w = (float)platform->width - 32.0f;
     }
@@ -224,6 +233,14 @@ layout_modal(Platform *platform, SettingsLayout *out)
     }
     out->browse_x = out->path_x + out->path_w - inner - out->browse_w;
     out->browse_y = out->path_y + (out->path_h - out->browse_h) * 0.5f;
+    out->exe_h = out->path_h;
+    out->exe_x = out->content_x;
+    out->exe_y = out->path_y + out->path_h + (float)modal_px(38, s);
+    out->exe_w = out->content_w;
+    out->exe_browse_w = out->browse_w;
+    out->exe_browse_h = out->browse_h;
+    out->exe_browse_x = out->path_x + out->path_w - inner - out->exe_browse_w;
+    out->exe_browse_y = out->exe_y + (out->exe_h - out->exe_browse_h) * 0.5f;
 
     out->lang_x = out->content_x;
     out->lang_y = out->content_y + (float)modal_px(36, s);
@@ -271,7 +288,7 @@ layout_modal(Platform *platform, SettingsLayout *out)
     out->ok_x = out->content_x + out->content_w - out->ok_w;
     out->ok_y = out->y + out->h - inset - out->ok_h;
     out->status_x = out->content_x;
-    out->status_y = out->path_y + out->path_h + gap;
+    out->status_y = out->exe_y + out->exe_h + gap;
     out->status_w = out->content_w;
     out->status_h = (float)modal_px(36, s);
 
@@ -297,6 +314,13 @@ current_dir(Platform *platform)
 {
     const char *dir = platform->install_dir ? platform->install_dir() : "";
     return dir ? dir : "";
+}
+
+static const char *
+current_exe(Platform *platform)
+{
+    const char *exe = platform->install_exe ? platform->install_exe() : "";
+    return exe ? exe : "";
 }
 
 static void
@@ -358,6 +382,23 @@ choose_folder(Platform *platform)
     }
     if (platform->install_set_dir) {
         platform->install_set_dir(picked);
+    }
+}
+
+static void
+choose_exe(Platform *platform)
+{
+    char picked[MAX_PATH];
+
+    if (!platform->pick_file || is_busy(platform)) {
+        return;
+    }
+    picked[0] = '\0';
+    if (!platform->pick_file(picked, (int)sizeof(picked)) || picked[0] == '\0') {
+        return;
+    }
+    if (platform->install_set_exe) {
+        platform->install_set_exe(picked);
     }
 }
 
@@ -426,9 +467,16 @@ draw_section_label(
 }
 
 static void
-draw_path_field(
+draw_path_row(
     Platform *platform,
-    const SettingsLayout *L,
+    float x,
+    float y,
+    float w,
+    float h,
+    float bx,
+    float by,
+    float bw,
+    float bh,
     const wchar_t *path,
     float hover_browse,
     int busy,
@@ -437,10 +485,10 @@ draw_path_field(
 )
 {
     const ThemeChrome *chrome = theme_chrome();
-    float radius = L->path_h * 0.28f;
+    float radius = h * 0.28f;
     float pad = (float)modal_px(12, scale);
     float px = (float)modal_px(13, scale);
-    float chip_r = L->browse_h * 0.36f;
+    float chip_r = bh * 0.36f;
     float text_w;
     int alpha = (int)(anim * 255.0f);
     uint32_t field = modal_field_color();
@@ -449,28 +497,28 @@ draw_path_field(
     uint32_t fg = (path && path[0] && wcscmp(path, L"Not set") != 0) ? chrome->title_color : chrome->muted;
     uint32_t chip_fg = busy ? chrome->muted : (hover_browse > 0.2f ? chrome->hover : chrome->title_color);
 
-    icon_round_rect(platform->hdc, L->path_x, L->path_y, L->path_w, L->path_h, radius, field, alpha);
+    icon_round_rect(platform->hdc, x, y, w, h, radius, field, alpha);
     icon_round_stroke(
         platform->hdc,
-        L->path_x,
-        L->path_y,
-        L->path_w,
-        L->path_h,
+        x,
+        y,
+        w,
+        h,
         radius,
         stroke,
         (int)(anim * (hover_browse > 0.2f ? 70.0f : 28.0f)),
         1.0f
     );
-    text_w = L->browse_x - L->path_x - pad - (float)modal_px(6, scale);
+    text_w = bx - x - pad - (float)modal_px(6, scale);
     if (text_w < 8.0f) {
         text_w = 8.0f;
     }
     icon_draw_label_alpha(
         platform->hdc,
-        L->path_x + pad,
-        L->path_y,
+        x + pad,
+        y,
         text_w,
-        L->path_h,
+        h,
         path,
         fg,
         px,
@@ -479,20 +527,20 @@ draw_path_field(
     );
     icon_round_rect(
         platform->hdc,
-        L->browse_x,
-        L->browse_y,
-        L->browse_w,
-        L->browse_h,
+        bx,
+        by,
+        bw,
+        bh,
         chip_r,
         chip,
         (int)(anim * (busy ? 140.0f : 255.0f))
     );
     icon_draw_label_center_alpha(
         platform->hdc,
-        L->browse_x,
-        L->browse_y,
-        L->browse_w,
-        L->browse_h,
+        bx,
+        by,
+        bw,
+        bh,
         L"Browse",
         chip_fg,
         (float)modal_px(12, scale),
@@ -1040,6 +1088,7 @@ settings_modal_hide(void)
     g_lang_drag = 0;
     g_hover_close = 0.0f;
     g_hover_browse = 0.0f;
+    g_hover_exe = 0.0f;
     g_hover_lang = 0.0f;
     g_hover_ok = 0.0f;
     g_hover_copy = 0.0f;
@@ -1070,6 +1119,7 @@ settings_modal_tick(Platform *platform, float dt)
     int my;
     int over_close;
     int over_browse;
+    int over_exe;
     int over_lang;
     int over_ok;
     int over_card;
@@ -1103,6 +1153,8 @@ settings_modal_tick(Platform *platform, float dt)
     over_close = modal_hit(mx, my, L.close_x, L.close_y, L.close_s, L.close_s);
     over_browse = !busy && g_page == SETTINGS_PAGE_INSTALL &&
         modal_hit(mx, my, L.path_x, L.path_y, L.path_w, L.path_h);
+    over_exe = !busy && g_page == SETTINGS_PAGE_INSTALL &&
+        modal_hit(mx, my, L.exe_x, L.exe_y, L.exe_w, L.exe_h);
     over_lang = !busy && g_page == SETTINGS_PAGE_GENERAL &&
         modal_hit(mx, my, L.lang_x, L.lang_y, L.lang_w, L.lang_h);
     over_menu = g_lang_open && g_page == SETTINGS_PAGE_GENERAL &&
@@ -1137,6 +1189,7 @@ settings_modal_tick(Platform *platform, float dt)
     over_card = modal_hit(mx, my, L.x, L.y, L.w, L.h) || over_menu;
     g_hover_close = modal_approach(g_hover_close, (g_open && over_close) ? 1.0f : 0.0f, dt);
     g_hover_browse = modal_approach(g_hover_browse, (g_open && over_browse) ? 1.0f : 0.0f, dt);
+    g_hover_exe = modal_approach(g_hover_exe, (g_open && over_exe) ? 1.0f : 0.0f, dt);
     g_hover_lang = modal_approach(g_hover_lang, (g_open && (over_lang || g_lang_open)) ? 1.0f : 0.0f, dt);
     g_hover_ok = modal_approach(g_hover_ok, (g_open && over_ok) ? 1.0f : 0.0f, dt);
     g_hover_copy = modal_approach(g_hover_copy, (g_open && over_copy) ? 1.0f : 0.0f, dt);
@@ -1224,8 +1277,50 @@ settings_modal_tick(Platform *platform, float dt)
                 max_chars = 95;
             }
             path_label(current_dir(platform), path_w, max_chars);
+            draw_path_row(
+                platform,
+                L.path_x,
+                L.path_y,
+                L.path_w,
+                L.path_h,
+                L.browse_x,
+                L.browse_y,
+                L.browse_w,
+                L.browse_h,
+                path_w,
+                g_hover_browse,
+                busy,
+                g_anim,
+                s
+            );
+            draw_section_label(
+                platform,
+                L.content_x,
+                L.path_y + L.path_h + (float)modal_px(10, s),
+                L.content_w,
+                (float)modal_px(20, s),
+                L"Game EXE",
+                s,
+                g_anim
+            );
+            path_label(current_exe(platform), path_w, max_chars);
+            draw_path_row(
+                platform,
+                L.exe_x,
+                L.exe_y,
+                L.exe_w,
+                L.exe_h,
+                L.exe_browse_x,
+                L.exe_browse_y,
+                L.exe_browse_w,
+                L.exe_browse_h,
+                path_w,
+                g_hover_exe,
+                busy,
+                g_anim,
+                s
+            );
         }
-        draw_path_field(platform, &L, path_w, g_hover_browse, busy, g_anim, s);
         if (busy) {
             wcscpy(g_status_w, L"Folder is locked while downloading.");
         } else if (g_arm_download && !has_dir(platform)) {
@@ -1235,7 +1330,7 @@ settings_modal_tick(Platform *platform, float dt)
         } else if (is_ready(platform)) {
             wcscpy(g_status_w, L"Dawn is installed in this folder.");
         } else {
-            wcscpy(g_status_w, L"New downloads will go here.");
+            wcscpy(g_status_w, L"Downloads go in the folder. Play uses the EXE.");
         }
         icon_draw_label_alpha(
             platform->hdc,
@@ -1317,6 +1412,8 @@ settings_modal_tick(Platform *platform, float dt)
             settings_modal_close();
         } else if (over_browse) {
             choose_folder(platform);
+        } else if (over_exe) {
+            choose_exe(platform);
         } else if (over_ok) {
             confirm_ok(platform);
         }

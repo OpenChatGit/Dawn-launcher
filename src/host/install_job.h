@@ -20,6 +20,8 @@ void install_job_poll(void);
 
 const char *install_job_dir(void);
 void install_job_set_dir(const char *dir);
+const char *install_job_exe(void);
+void install_job_set_exe(const char *path);
 void install_job_set_user(const char *username);
 void install_job_submit_secret(const char *text);
 int install_job_start(void);

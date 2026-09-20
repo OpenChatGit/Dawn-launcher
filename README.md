@@ -31,7 +31,9 @@ The version in `VERSION` is the current official number. Dev and CI builds may a
 - Skips the depot download when those files are already complete. If only Dawn is missing, only Dawn is installed.
 - Cached depot files live under `%LOCALAPPDATA%\Dawn\depot-cache` (hardlinked on the same volume). Dawn and Sunrise overlays are never written into that cache.
 - **Play** only when the 86657 depots and Dawn are actually present.
-- Launches `destiny2.exe` with `DAWN_FOREST_BASELINE=1` and does not write `steam_appid.txt`, so live Steam should not force an integrity check against current Destiny 2.
+- Settings → Installation has **Install folder** (where downloads go) and **Game EXE** (`destiny2.exe` that Play uses).
+- On Windows, Play starts that `destiny2.exe` with `DAWN_FOREST_BASELINE=1` and does not write `steam_appid.txt`, so live Steam should not force an integrity check against current Destiny 2.
+- On Linux, Play only runs `launch-destiny.sh` in the game folder (`steam-run` + Proton, otherwise Wine). You can also start that script yourself.
 - Uninstall Dawn, uninstall Sunrise, or uninstall everything. Destiny 2 depot files stay unless you choose **Uninstall Full**.
 - Official builds show **New Version** in the titlebar only when a newer official GitHub release exists. Dev builds (`host.exe`) always show that control so it can be tested.
 
@@ -96,6 +98,23 @@ This project is early. Expect gaps.
 - Self-update replaces launcher files only. It does not repair a broken game install.
 - Dawn.localhost / `Dawn` hosts mapping is a local workaround for Steam OpenID. Some browsers or locked-down PCs may still fail the callback.
 - Linux is a first-class target in CI, but most daily testing is on Windows.
+
+## Linux Play
+
+Play only starts `launch-destiny.sh` next to `destiny2.exe`. The script does the same thing as Dawn-installer:
+
+1. Uses `steam-run` when it is on PATH (NixOS / SteamOS).
+2. Starts Proton Experimental, 10, 9, or 8 with Steam compatdata `1085660`.
+3. If Proton is missing, starts `wine64` / `wine`, also under `steam-run` when that exists.
+
+You can run the script yourself:
+
+```
+chmod +x launch-destiny.sh
+./launch-destiny.sh
+```
+
+Install Proton in Steam first. Set **Settings → Installation → Game EXE** if `destiny2.exe` is not in the install folder.
 - Themes, Sunrise, language depots, and cache reuse have more edge cases than the happy path.
 - If something looks wrong, treat the GitHub issue list and this file as incomplete.
 

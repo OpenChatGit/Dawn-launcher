@@ -1206,6 +1206,88 @@ platform_pick_folder(char *out, int max)
     return ok;
 }
 
+static int
+platform_pick_file(char *out, int max)
+{
+    IFileOpenDialog *dlg = NULL;
+    IShellItem *item = NULL;
+    PWSTR wpath = NULL;
+    HRESULT hr;
+    HRESULT com;
+    DWORD opts = 0;
+    int ok = 0;
+    COMDLG_FILTERSPEC filters[2];
+
+    if (!out || max < 8) {
+        return 0;
+    }
+    out[0] = '\0';
+    force_english_ui();
+    com = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    hr = CoCreateInstance(
+        &CLSID_FileOpenDialog,
+        NULL,
+        CLSCTX_INPROC_SERVER,
+        &IID_IFileOpenDialog,
+        (void **)&dlg
+    );
+    if (FAILED(hr) || !dlg) {
+        if (com == S_OK) {
+            CoUninitialize();
+        }
+        return 0;
+    }
+    if (SUCCEEDED(IFileOpenDialog_GetOptions(dlg, &opts))) {
+        IFileOpenDialog_SetOptions(dlg, opts | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+    }
+    filters[0].pszName = L"Destiny 2";
+    filters[0].pszSpec = L"destiny2.exe";
+    filters[1].pszName = L"Executables";
+    filters[1].pszSpec = L"*.exe";
+    IFileOpenDialog_SetFileTypes(dlg, 2, filters);
+    IFileOpenDialog_SetFileName(dlg, L"destiny2.exe");
+    IFileOpenDialog_SetTitle(dlg, L"Choose destiny2.exe");
+    {
+        const char *current = install_job_exe();
+        const char *folder = install_job_dir();
+        wchar_t start[MAX_PATH];
+        IShellItem *item_folder = NULL;
+        if (current && current[0]) {
+            char parent[MAX_PATH];
+            const char *slash = strrchr(current, '\\');
+            if (!slash) {
+                slash = strrchr(current, '/');
+            }
+            if (slash && (size_t)(slash - current) < sizeof(parent)) {
+                memcpy(parent, current, (size_t)(slash - current));
+                parent[slash - current] = '\0';
+                folder = parent;
+            }
+        }
+        if (folder && folder[0]) {
+            os_utf8_to_wide(folder, start, MAX_PATH);
+            if (SUCCEEDED(SHCreateItemFromParsingName(start, NULL, &IID_IShellItem, (void **)&item_folder)) && item_folder) {
+                IFileOpenDialog_SetFolder(dlg, item_folder);
+                IShellItem_Release(item_folder);
+            }
+        }
+    }
+    hr = IFileOpenDialog_Show(dlg, g_window ? g_window->hwnd : NULL);
+    if (SUCCEEDED(hr) && SUCCEEDED(IFileOpenDialog_GetResult(dlg, &item)) && item) {
+        if (SUCCEEDED(IShellItem_GetDisplayName(item, SIGDN_FILESYSPATH, &wpath)) && wpath) {
+            WideCharToMultiByte(CP_UTF8, 0, wpath, -1, out, max, NULL, NULL);
+            CoTaskMemFree(wpath);
+            ok = out[0] != '\0';
+        }
+        IShellItem_Release(item);
+    }
+    IFileOpenDialog_Release(dlg);
+    if (com == S_OK) {
+        CoUninitialize();
+    }
+    return ok;
+}
+
 void
 window_keep_key_focus(HostWindow *window)
 {
@@ -1287,7 +1369,10 @@ window_bind_platform(HostWindow *window, Platform *platform, const char *project
     platform->embed_set_view = media_embed_set_view;
     platform->install_set_dir = install_job_set_dir;
     platform->install_dir = install_job_dir;
+    platform->install_set_exe = install_job_set_exe;
+    platform->install_exe = install_job_exe;
     platform->pick_folder = platform_pick_folder;
+    platform->pick_file = platform_pick_file;
     platform->install_set_user = install_job_set_user;
     platform->install_submit_secret = install_job_submit_secret;
     platform->install_start = install_job_start;

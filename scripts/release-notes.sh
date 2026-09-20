@@ -12,11 +12,9 @@ fi
 
 if [ "$KIND" = "official" ]; then
     cat > "$OUT" <<EOF
-Linux Play uses only Wine/DXVK already on disk (Lutris wine-tkg 11.9 and DXVK 2.6.2 first). Dawn does not download a Wine build or DXVK.
+On Linux, Play only runs \`launch-destiny.sh\`: steam-run plus Proton when present, otherwise Wine. That matches the Dawn-installer path.
 
-It reuses an existing Lutris Destiny prefix when present, or a Dawn prefix that already has DXVK. System Wine without DXVK is not used. steam-run is gone so \`%AppData%\` stays valid.
-
-Proton stays as a fallback with a Dawn compat path, not Steam compatdata 1085660.
+Windows Play is unchanged.
 EOF
 else
     cat > "$OUT" <<EOF

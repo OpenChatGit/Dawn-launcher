@@ -78,7 +78,10 @@ typedef struct Platform {
     void (*embed_set_view)(int x, int y, int w, int h, int visible);
     void (*install_set_dir)(const char *dir);
     const char *(*install_dir)(void);
+    void (*install_set_exe)(const char *path);
+    const char *(*install_exe)(void);
     int (*pick_folder)(char *out, int max);
+    int (*pick_file)(char *out, int max);
     void (*install_set_user)(const char *username);
     void (*install_submit_secret)(const char *text);
     int (*install_start)(void);

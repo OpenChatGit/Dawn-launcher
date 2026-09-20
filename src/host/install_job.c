@@ -98,6 +98,7 @@ typedef enum InstallPhase {
 
 static char g_root[MAX_PATH];
 static char g_dir[MAX_PATH];
+static char g_exe[MAX_PATH];
 static char g_user[128];
 static char g_tool[MAX_PATH];
 static char g_secret[256];
@@ -501,6 +502,29 @@ persist_dir(void)
     if (g_dir_pinned) {
         fputs("\npinned\n", file);
     }
+    fclose(file);
+}
+
+static void
+persist_exe(void)
+{
+    char dawn[MAX_PATH];
+    char path[MAX_PATH];
+    FILE *file;
+
+    os_data_dir(dawn, sizeof(dawn));
+    if (!os_join(path, sizeof(path), dawn, "game_exe.txt")) {
+        return;
+    }
+    if (!g_exe[0]) {
+        os_delete_file(path);
+        return;
+    }
+    file = fopen(path, "wb");
+    if (!file) {
+        return;
+    }
+    fputs(g_exe, file);
     fclose(file);
 }
 
@@ -1382,15 +1406,23 @@ launch_game_tracked(void)
     char root[MAX_PATH];
     char exe[MAX_PATH];
 
-    if (!g_dir[0]) {
+    if (!g_dir[0] && !(g_exe[0] && file_exists(g_exe))) {
         return 0;
     }
-    snprintf(root, sizeof(root), "%s", g_dir);
+    exe[0] = '\0';
+    if (g_exe[0] && file_exists(g_exe)) {
+        snprintf(exe, sizeof(exe), "%s", g_exe);
+        if (!path_parent(root, sizeof(root), exe)) {
+            snprintf(root, sizeof(root), "%s", g_dir);
+        }
+    } else {
+        snprintf(root, sizeof(root), "%s", g_dir);
+        if (!(os_join(exe, sizeof(exe), root, "destiny2.exe") && file_exists(exe)) &&
+            !find_game_exe_in(root, exe, sizeof(exe))) {
+            return 0;
+        }
+    }
     remove_steam_appid(root);
-    if (!(os_join(exe, sizeof(exe), root, "destiny2.exe") && file_exists(exe)) &&
-        !find_game_exe_in(root, exe, sizeof(exe))) {
-        return 0;
-    }
 #ifdef _WIN32
     {
         STARTUPINFOA si;
@@ -1444,6 +1476,9 @@ launch_game_tracked(void)
             unsetenv("SteamGameId");
             unsetenv("SteamOverlayGameId");
             setenv("DAWN_FOREST_BASELINE", "1", 1);
+            if (exe[0]) {
+                setenv("DAWN_GAME_EXE", exe, 1);
+            }
             if (root[0] && chdir(root) != 0) {
                 _exit(1);
             }
@@ -2539,9 +2574,22 @@ load_install_dir(void)
     if (g_dir[0] == '\0') {
         os_join(g_dir, sizeof(g_dir), dawn, "Destiny2");
     }
+    if (os_join(path, sizeof(path), dawn, "game_exe.txt")) {
+        file = fopen(path, "rb");
+        if (file) {
+            if (fgets(g_exe, (int)sizeof(g_exe), file)) {
+                size_t n = strlen(g_exe);
+                while (n > 0 && (g_exe[n - 1] == '\n' || g_exe[n - 1] == '\r')) {
+                    g_exe[--n] = '\0';
+                }
+            }
+            fclose(file);
+        }
+    }
     normalize_install_dir();
     os_mkdirs(g_dir);
     persist_dir();
+    persist_exe();
     load_lang();
     refresh_installed();
 }
@@ -4097,9 +4145,10 @@ write_launch_scripts(const char *dir)
         }
     }
 #else
+    {
+    char scripts[MAX_PATH];
+    char src[MAX_PATH];
     if (os_join(path, sizeof(path), dir, "launch-destiny.sh")) {
-        char scripts[MAX_PATH];
-        char src[MAX_PATH];
         int copied = 0;
 
         if (g_root[0] &&
@@ -4114,8 +4163,21 @@ write_launch_scripts(const char *dir)
             if (file) {
                 fputs(
                     "#!/usr/bin/env sh\n"
-                    "echo \"[ERROR] Dawn launch-destiny.sh is missing from the launcher scripts folder.\" >&2\n"
-                    "echo \"Dawn will not download Wine or DXVK. Reinstall the Linux package.\" >&2\n"
+                    "set -e\n"
+                    "GAME_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n"
+                    "cd \"$GAME_DIR\"\n"
+                    "export DAWN_FOREST_BASELINE=1\n"
+                    "EXE=\"${DAWN_GAME_EXE:-$GAME_DIR/destiny2.exe}\"\n"
+                    "if command -v steam-run >/dev/null 2>&1; then RUNNER=steam-run; else RUNNER=; fi\n"
+                    "if command -v wine64 >/dev/null 2>&1; then\n"
+                    "  if [ -n \"$RUNNER\" ]; then exec $RUNNER wine64 \"$EXE\" \"$@\"; fi\n"
+                    "  exec wine64 \"$EXE\" \"$@\"\n"
+                    "fi\n"
+                    "if command -v wine >/dev/null 2>&1; then\n"
+                    "  if [ -n \"$RUNNER\" ]; then exec $RUNNER wine \"$EXE\" \"$@\"; fi\n"
+                    "  exec wine \"$EXE\" \"$@\"\n"
+                    "fi\n"
+                    "echo \"[ERROR] Wine was not found.\"\n"
                     "exit 1\n",
                     file
                 );
@@ -4123,6 +4185,7 @@ write_launch_scripts(const char *dir)
             }
         }
         chmod(path, 0755);
+    }
     }
 #endif
 }
@@ -4631,6 +4694,7 @@ install_job_init(const char *project_root)
 {
     memset(g_root, 0, sizeof(g_root));
     memset(g_dir, 0, sizeof(g_dir));
+    memset(g_exe, 0, sizeof(g_exe));
     memset(g_user, 0, sizeof(g_user));
     memset(g_tool, 0, sizeof(g_tool));
     g_filelist[0] = '\0';
@@ -4761,7 +4825,14 @@ install_job_set_dir(const char *dir)
     normalize_install_dir();
     g_dir_pinned = 1;
     os_mkdirs(g_dir);
+    if (g_exe[0]) {
+        char parent[MAX_PATH];
+        if (!path_parent(parent, sizeof(parent), g_exe) || os_stricmp(parent, g_dir) != 0) {
+            g_exe[0] = '\0';
+        }
+    }
     persist_dir();
+    persist_exe();
     invalidate_install_ready();
     if (is_live_latest_d2(g_dir) && !dawn_depots_present(g_dir)) {
         set_status("Live D2 folder, not 86657");
@@ -4780,6 +4851,60 @@ const char *
 install_job_dir(void)
 {
     return g_dir;
+}
+
+const char *
+install_job_exe(void)
+{
+    static char fallback[MAX_PATH];
+
+    if (g_exe[0]) {
+        return g_exe;
+    }
+    if (g_dir[0] && os_join(fallback, sizeof(fallback), g_dir, "destiny2.exe") && file_exists(fallback)) {
+        return fallback;
+    }
+    fallback[0] = '\0';
+    return fallback;
+}
+
+void
+install_job_set_exe(const char *path)
+{
+    char parent[MAX_PATH];
+
+    if (g_busy) {
+        set_status("Folder locked");
+        return;
+    }
+    if (!path || !path[0]) {
+        return;
+    }
+    snprintf(g_exe, sizeof(g_exe), "%s", path);
+    if (path_parent(parent, sizeof(parent), g_exe) && parent[0]) {
+        snprintf(g_dir, sizeof(g_dir), "%s", parent);
+        normalize_install_dir();
+        g_dir_pinned = 1;
+        os_mkdirs(g_dir);
+    }
+    persist_dir();
+    persist_exe();
+    invalidate_install_ready();
+    if (!file_exists(g_exe)) {
+        set_status("EXE path saved");
+        return;
+    }
+    if (is_live_latest_d2(g_dir) && !dawn_depots_present(g_dir)) {
+        set_status("Live D2 folder, not 86657");
+        return;
+    }
+    if (install_complete(g_dir)) {
+        g_installed = 1;
+        set_status("Dawn is ready");
+        return;
+    }
+    g_installed = 0;
+    set_status("Game EXE set");
 }
 
 void

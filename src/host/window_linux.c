@@ -729,6 +729,52 @@ platform_pick_folder(char *out, int max)
     return read_picker_line(cmd, out, max);
 }
 
+static int
+platform_pick_file(char *out, int max)
+{
+    char cmd[MAX_PATH * 2];
+    const char *current = install_job_exe();
+    const char *folder = install_job_dir();
+    const char *start = (current && current[0]) ? current : folder;
+
+    if (!out || max < 8) {
+        return 0;
+    }
+    out[0] = '\0';
+    if (start && start[0] && !strchr(start, '\'')) {
+        snprintf(
+            cmd,
+            sizeof(cmd),
+            "LANG=C.UTF-8 LC_ALL=C.UTF-8 zenity --file-selection --title='Choose destiny2.exe' --filename='%s' --file-filter='destiny2.exe | destiny2.exe' --file-filter='Executables | *.exe' 2>/dev/null",
+            start
+        );
+    } else {
+        snprintf(
+            cmd,
+            sizeof(cmd),
+            "LANG=C.UTF-8 LC_ALL=C.UTF-8 zenity --file-selection --title='Choose destiny2.exe' --file-filter='destiny2.exe | destiny2.exe' --file-filter='Executables | *.exe' 2>/dev/null"
+        );
+    }
+    if (read_picker_line(cmd, out, max)) {
+        return 1;
+    }
+    if (start && start[0] && !strchr(start, '\'')) {
+        snprintf(
+            cmd,
+            sizeof(cmd),
+            "LANG=C.UTF-8 LC_ALL=C.UTF-8 kdialog --getopenfilename '%s' 'destiny2.exe' 2>/dev/null",
+            start
+        );
+    } else {
+        snprintf(cmd, sizeof(cmd), "LANG=C.UTF-8 LC_ALL=C.UTF-8 kdialog --getopenfilename \"$HOME\" 'destiny2.exe' 2>/dev/null");
+    }
+    if (read_picker_line(cmd, out, max)) {
+        return 1;
+    }
+    snprintf(cmd, sizeof(cmd), "LANG=C.UTF-8 LC_ALL=C.UTF-8 yad --file-selection --title='Choose destiny2.exe' 2>/dev/null");
+    return read_picker_line(cmd, out, max);
+}
+
 void
 window_keep_key_focus(HostWindow *window)
 {
@@ -795,7 +841,10 @@ window_bind_platform(HostWindow *window, Platform *platform, const char *project
     platform->embed_set_view = media_embed_set_view;
     platform->install_set_dir = install_job_set_dir;
     platform->install_dir = install_job_dir;
+    platform->install_set_exe = install_job_set_exe;
+    platform->install_exe = install_job_exe;
     platform->pick_folder = platform_pick_folder;
+    platform->pick_file = platform_pick_file;
     platform->install_set_user = install_job_set_user;
     platform->install_submit_secret = install_job_submit_secret;
     platform->install_start = install_job_start;
