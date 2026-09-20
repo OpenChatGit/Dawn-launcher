@@ -373,6 +373,34 @@ slurp_file(const char *path, char **out)
 }
 
 static int
+find_asset_url(const char *block, const char *asset, char *out, size_t max)
+{
+    const char *p = block;
+
+    if (!block || !asset || !out || max < 8) {
+        return 0;
+    }
+    out[0] = '\0';
+    while ((p = strstr(p, "browser_download_url")) != NULL) {
+        const char *val = find_key(p, "browser_download_url");
+        char url[1024];
+        size_t n;
+        size_t a;
+
+        if (read_string(val, url, sizeof(url))) {
+            n = strlen(url);
+            a = strlen(asset);
+            if (n >= a && strcmp(url + (n - a), asset) == 0 && strncmp(url, "https://", 8) == 0) {
+                snprintf(out, max, "%s", url);
+                return 1;
+            }
+        }
+        p += 20;
+    }
+    return 0;
+}
+
+static int
 pick_release(const char *json)
 {
     const char *cursor = json;
@@ -426,19 +454,7 @@ pick_release(const char *json)
             url[0] = '\0';
             asset = strstr(block, ASSET_NAME);
             if (asset) {
-                const char *https = asset;
-                while (https > block && (asset - https) < 400) {
-                    if (strncmp(https, "https://", 8) == 0) {
-                        size_t n = 0;
-                        while (https[n] && https[n] != '"' && n + 1 < sizeof(url)) {
-                            url[n] = https[n];
-                            n += 1;
-                        }
-                        url[n] = '\0';
-                        break;
-                    }
-                    https -= 1;
-                }
+                find_asset_url(block, ASSET_NAME, url, sizeof(url));
             }
             if (strncmp(url, "https://", 8) == 0 &&
                 (is_dev_build() || version_newer(APP_VERSION, tag)) &&
@@ -460,18 +476,23 @@ pick_release(const char *json)
 }
 
 static int
-start_curl(const char *url, const char *dest)
+start_curl(const char *url, const char *dest, int github_json)
 {
     char curl[MAX_PATH];
     char command[4096];
+    const char *accept;
 
     find_curl(curl, sizeof(curl));
+    accept = github_json
+        ? " -H \"Accept: application/vnd.github+json\""
+        : " -H \"Accept: application/octet-stream\"";
     snprintf(
         command,
         sizeof(command),
-        "\"%s\" -fsSL --retry 2 -A \"DawnLauncher/%s\" -H \"Accept: application/vnd.github+json\" -o \"%s\" \"%s\"",
+        "\"%s\" -fsSL --retry 2 -A \"DawnLauncher/%s\"%s -o \"%s\" \"%s\"",
         curl,
         APP_VERSION,
+        accept,
         dest,
         url
     );
@@ -670,29 +691,82 @@ finish_check(int ok)
     }
 }
 
-static void
-finish_download(int ok)
+static int
+package_looks_valid(void)
+{
+    FILE *file;
+    unsigned char mag[4];
+
+    file = fopen(g_pkg, "rb");
+    if (!file) {
+        return 0;
+    }
+    if (fread(mag, 1, 4, file) != 4) {
+        fclose(file);
+        return 0;
+    }
+    fclose(file);
+#ifdef _WIN32
+    return mag[0] == 'P' && mag[1] == 'K';
+#else
+    return (mag[0] == 0x1f && mag[1] == 0x8b) || (mag[0] == 'P' && mag[1] == 'K');
+#endif
+}
+
+static int
+extract_package(void)
 {
     char command[4096];
 
+#ifdef _WIN32
+    {
+        char sys[MAX_PATH];
+        char tar[MAX_PATH];
+        UINT n;
+
+        snprintf(command, sizeof(command), "cmd.exe /c if exist \"%s\" rmdir /s /q \"%s\"", g_unpack, g_unpack);
+        run_cmd(command);
+        os_mkdirs(g_unpack);
+        n = GetSystemDirectoryA(sys, (UINT)sizeof(sys));
+        if (n > 0 && n < sizeof(sys) && os_join(tar, sizeof(tar), sys, "tar.exe") && os_file_exists(tar)) {
+            snprintf(command, sizeof(command), "\"%s\" -xf \"%s\" -C \"%s\"", tar, g_pkg, g_unpack);
+            if (run_cmd(command)) {
+                return 1;
+            }
+        }
+        snprintf(
+            command,
+            sizeof(command),
+            "powershell.exe -NoProfile -Command \"Expand-Archive -LiteralPath '%s' -DestinationPath '%s' -Force\"",
+            g_pkg,
+            g_unpack
+        );
+        return run_cmd(command);
+    }
+#else
+    snprintf(command, sizeof(command), "rm -rf \"%s\" && mkdir -p \"%s\"", g_unpack, g_unpack);
+    run_cmd(command);
+    snprintf(command, sizeof(command), "tar -xf \"%s\" -C \"%s\"", g_pkg, g_unpack);
+    return run_cmd(command);
+#endif
+}
+
+static void
+finish_download(int ok)
+{
     close_child();
     if (!ok || !os_file_exists(g_pkg) || os_file_size(g_pkg) < 1024) {
         g_phase = UPD_FAILED;
         set_status("Update download failed");
         return;
     }
+    if (!package_looks_valid()) {
+        g_phase = UPD_FAILED;
+        set_status("Update download was not a package");
+        return;
+    }
     set_status("Installing update");
-#ifdef _WIN32
-    snprintf(command, sizeof(command), "cmd.exe /c if exist \"%s\" rmdir /s /q \"%s\"", g_unpack, g_unpack);
-    run_cmd(command);
-    os_mkdirs(g_unpack);
-    snprintf(command, sizeof(command), "tar -xf \"%s\" -C \"%s\"", g_pkg, g_unpack);
-#else
-    snprintf(command, sizeof(command), "rm -rf \"%s\" && mkdir -p \"%s\"", g_unpack, g_unpack);
-    run_cmd(command);
-    snprintf(command, sizeof(command), "tar -xf \"%s\" -C \"%s\"", g_pkg, g_unpack);
-#endif
-    if (!run_cmd(command)) {
+    if (!extract_package()) {
         g_phase = UPD_FAILED;
         set_status("Update extract failed");
         return;
@@ -707,7 +781,7 @@ static void
 begin_check(void)
 {
     os_mkdirs(g_work);
-    if (!start_curl(RELEASES_API, g_json)) {
+    if (!start_curl(RELEASES_API, g_json, 1)) {
         g_phase = UPD_IDLE;
         g_next_check = os_tick_ms() + CHECK_MS;
         return;
@@ -835,7 +909,7 @@ self_update_begin(void)
         return 0;
     }
     os_mkdirs(g_work);
-    if (!start_curl(g_url, g_pkg)) {
+    if (!start_curl(g_url, g_pkg, 0)) {
         g_phase = UPD_FAILED;
         set_status("Could not start download");
         return 0;

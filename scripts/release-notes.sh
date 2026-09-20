@@ -12,9 +12,9 @@ fi
 
 if [ "$KIND" = "official" ]; then
     cat > "$OUT" <<EOF
-On Linux, Play only runs \`launch-destiny.sh\`: steam-run plus Proton when present, otherwise Wine. That matches the Dawn-installer path.
+Self-update no longer treats the GitHub asset API URL as the zip. That downloaded JSON, so extract failed with "Update extract failed".
 
-Windows Play is unchanged.
+The updater now uses \`browser_download_url\`, checks that the file is a real package, and extracts with System32 tar or PowerShell on Windows.
 EOF
 else
     cat > "$OUT" <<EOF
