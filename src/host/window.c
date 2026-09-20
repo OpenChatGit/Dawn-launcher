@@ -1413,6 +1413,7 @@ window_bind_platform(HostWindow *window, Platform *platform, const char *project
     platform->update_version = self_update_version;
     platform->update_busy = self_update_busy;
     platform->update_status = self_update_status;
+    platform->update_progress = self_update_progress;
     platform->update_begin = self_update_begin;
     platform->update_cancel = self_update_cancel;
 }

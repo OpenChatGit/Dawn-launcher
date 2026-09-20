@@ -3,7 +3,7 @@
 
 #include "shared/types.h"
 
-#define APP_API_VERSION 27
+#define APP_API_VERSION 28
 #ifndef INSTALL_PART_DEPOTS
 #define INSTALL_PART_DEPOTS 1
 #define INSTALL_PART_DAWN 2
@@ -122,6 +122,7 @@ typedef struct Platform {
     const char *(*update_version)(void);
     int (*update_busy)(void);
     const char *(*update_status)(void);
+    float (*update_progress)(void);
     int (*update_begin)(void);
     void (*update_cancel)(void);
 } Platform;

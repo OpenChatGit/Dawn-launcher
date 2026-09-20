@@ -275,7 +275,8 @@ login_modal_tick(Platform *platform, float dt)
         g_hover_steam,
         g_anim,
         0,
-        s
+        s,
+        -1.0f
     );
 
     if (!g_open) {

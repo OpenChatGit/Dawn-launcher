@@ -12,9 +12,9 @@ fi
 
 if [ "$KIND" = "official" ]; then
     cat > "$OUT" <<EOF
-Self-update no longer treats the GitHub asset API URL as the zip. That downloaded JSON, so extract failed with "Update extract failed".
+Self-update no longer dies with "Update download failed" when GitHub's CDN resets HTTP/2. The downloader now uses HTTP/1.1 and retries.
 
-The updater now uses \`browser_download_url\`, checks that the file is a real package, and extracts with System32 tar or PowerShell on Windows.
+The Update button shows Starting, then percent as the zip arrives, then Installing.
 EOF
 else
     cat > "$OUT" <<EOF

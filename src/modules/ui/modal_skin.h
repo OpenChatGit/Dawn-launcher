@@ -88,7 +88,8 @@ void modal_draw_button(
     float hover,
     float anim,
     int disabled,
-    float scale
+    float scale,
+    float progress
 );
 
 #endif

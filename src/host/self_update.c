@@ -41,6 +41,7 @@ typedef enum UpdatePhase {
 static UpdatePhase g_phase;
 static char g_version[32];
 static char g_url[1024];
+static uint64_t g_bytes_total;
 static char g_status[160];
 static char g_work[MAX_PATH];
 static char g_json[MAX_PATH];
@@ -48,6 +49,8 @@ static char g_pkg[MAX_PATH];
 static char g_unpack[MAX_PATH];
 static uint32_t g_next_check;
 static int g_quit;
+static int g_dl_attempt;
+static int g_dl_ready;
 #ifdef _WIN32
 static HANDLE g_process;
 #else
@@ -372,30 +375,69 @@ slurp_file(const char *path, char **out)
     return 1;
 }
 
+static uint64_t
+read_json_size(const char *lo, const char *hi)
+{
+    const char *p;
+    const char *found = NULL;
+
+    if (!lo || !hi || hi <= lo) {
+        return 0;
+    }
+    p = lo;
+    while (p < hi) {
+        const char *next = strstr(p, "\"size\"");
+        if (!next || next >= hi) {
+            break;
+        }
+        found = next;
+        p = next + 6;
+    }
+    if (!found) {
+        return 0;
+    }
+    found = find_key(found, "size");
+    if (!found) {
+        return 0;
+    }
+    return (uint64_t)strtoull(found, NULL, 10);
+}
+
 static int
-find_asset_url(const char *block, const char *asset, char *out, size_t max)
+find_asset_url(const char *block, const char *asset, char *out, size_t max, uint64_t *size)
 {
     const char *p = block;
+    const char *key = "\"browser_download_url\"";
+    size_t key_len = 22;
 
     if (!block || !asset || !out || max < 8) {
         return 0;
     }
     out[0] = '\0';
-    while ((p = strstr(p, "browser_download_url")) != NULL) {
-        const char *val = find_key(p, "browser_download_url");
+    if (size) {
+        *size = 0;
+    }
+    while ((p = strstr(p, key)) != NULL) {
+        const char *val = p + key_len;
         char url[1024];
         size_t n;
         size_t a;
 
+        while (*val == ' ' || *val == '\t' || *val == '\n' || *val == '\r' || *val == ':') {
+            val += 1;
+        }
         if (read_string(val, url, sizeof(url))) {
             n = strlen(url);
             a = strlen(asset);
             if (n >= a && strcmp(url + (n - a), asset) == 0 && strncmp(url, "https://", 8) == 0) {
                 snprintf(out, max, "%s", url);
+                if (size) {
+                    *size = read_json_size(p > block + 480 ? p - 480 : block, p);
+                }
                 return 1;
             }
         }
-        p += 20;
+        p += key_len;
     }
     return 0;
 }
@@ -406,11 +448,13 @@ pick_release(const char *json)
     const char *cursor = json;
     char best_ver[32];
     char best_url[1024];
+    uint64_t best_size = 0;
 
     best_ver[0] = '\0';
     best_url[0] = '\0';
     g_version[0] = '\0';
     g_url[0] = '\0';
+    g_bytes_total = 0;
     if (!json) {
         return 0;
     }
@@ -454,13 +498,15 @@ pick_release(const char *json)
             url[0] = '\0';
             asset = strstr(block, ASSET_NAME);
             if (asset) {
-                find_asset_url(block, ASSET_NAME, url, sizeof(url));
-            }
-            if (strncmp(url, "https://", 8) == 0 &&
-                (is_dev_build() || version_newer(APP_VERSION, tag)) &&
-                version_newer(best_ver[0] ? best_ver : "0.0.0", tag)) {
-                snprintf(best_ver, sizeof(best_ver), "%s", tag[0] == 'v' || tag[0] == 'V' ? tag + 1 : tag);
-                snprintf(best_url, sizeof(best_url), "%s", url);
+                uint64_t size = 0;
+                find_asset_url(block, ASSET_NAME, url, sizeof(url), &size);
+                if (strncmp(url, "https://", 8) == 0 &&
+                    (is_dev_build() || version_newer(APP_VERSION, tag)) &&
+                    version_newer(best_ver[0] ? best_ver : "0.0.0", tag)) {
+                    snprintf(best_ver, sizeof(best_ver), "%s", tag[0] == 'v' || tag[0] == 'V' ? tag + 1 : tag);
+                    snprintf(best_url, sizeof(best_url), "%s", url);
+                    best_size = size;
+                }
             }
             free(block);
         }
@@ -472,6 +518,7 @@ pick_release(const char *json)
     }
     snprintf(g_version, sizeof(g_version), "%s", best_ver);
     snprintf(g_url, sizeof(g_url), "%s", best_url);
+    g_bytes_total = best_size;
     return 1;
 }
 
@@ -489,7 +536,7 @@ start_curl(const char *url, const char *dest, int github_json)
     snprintf(
         command,
         sizeof(command),
-        "\"%s\" -fsSL --retry 2 -A \"DawnLauncher/%s\"%s -o \"%s\" \"%s\"",
+        "\"%s\" -fsSL --http1.1 --retry 5 --retry-delay 1 --connect-timeout 20 --max-time 600 -A \"DawnLauncher/%s\"%s -o \"%s\" \"%s\"",
         curl,
         APP_VERSION,
         accept,
@@ -752,15 +799,52 @@ extract_package(void)
 }
 
 static void
+clear_package(void)
+{
+    if (g_pkg[0]) {
+        os_delete_file(g_pkg);
+    }
+    g_dl_ready = 0;
+}
+
+static int
+start_package_download(void)
+{
+    clear_package();
+    return start_curl(g_url, g_pkg, 0);
+}
+
+static int
+restart_download(void)
+{
+    if (!g_url[0] || g_dl_attempt >= 4) {
+        return 0;
+    }
+    g_dl_attempt += 1;
+    if (!start_package_download()) {
+        return 0;
+    }
+    g_phase = UPD_DOWNLOADING;
+    set_status("Starting download");
+    return 1;
+}
+
+static void
 finish_download(int ok)
 {
     close_child();
     if (!ok || !os_file_exists(g_pkg) || os_file_size(g_pkg) < 1024) {
+        if (restart_download()) {
+            return;
+        }
         g_phase = UPD_FAILED;
         set_status("Update download failed");
         return;
     }
     if (!package_looks_valid()) {
+        if (restart_download()) {
+            return;
+        }
         g_phase = UPD_FAILED;
         set_status("Update download was not a package");
         return;
@@ -790,6 +874,34 @@ begin_check(void)
     set_status("");
 }
 
+static float
+download_progress(void)
+{
+    uint64_t have;
+
+    if (g_phase == UPD_APPLY) {
+        return 1.0f;
+    }
+    if (g_phase != UPD_DOWNLOADING) {
+        return 0.0f;
+    }
+    if (g_bytes_total == 0) {
+        return 0.0f;
+    }
+    have = os_file_exists(g_pkg) ? os_file_size(g_pkg) : 0;
+    if (!g_dl_ready) {
+        if (have > 0 && have + 1024 < g_bytes_total) {
+            g_dl_ready = 1;
+        } else {
+            return 0.0f;
+        }
+    }
+    if (have >= g_bytes_total) {
+        return 0.99f;
+    }
+    return (float)((double)have / (double)g_bytes_total);
+}
+
 void
 self_update_init(void)
 {
@@ -800,6 +912,8 @@ self_update_init(void)
     memset(g_status, 0, sizeof(g_status));
     g_phase = UPD_IDLE;
     g_quit = 0;
+    g_dl_attempt = 0;
+    g_dl_ready = 0;
     g_next_check = os_tick_ms() + FIRST_CHECK_MS;
     os_data_dir(dawn, sizeof(dawn));
     if (!os_join(g_work, sizeof(g_work), dawn, "update") ||
@@ -842,6 +956,21 @@ self_update_poll(void)
     if (g_phase == UPD_CHECKING || g_phase == UPD_DOWNLOADING) {
         child = child_running();
         if (child == 1) {
+            if (g_phase == UPD_DOWNLOADING) {
+                float progress = download_progress();
+                int pct = (int)(progress * 100.0f + 0.5f);
+                if (pct < 0) {
+                    pct = 0;
+                }
+                if (pct > 99) {
+                    pct = 99;
+                }
+                if (progress < 0.01f) {
+                    set_status("Starting download");
+                } else if (g_bytes_total > 0) {
+                    snprintf(g_status, sizeof(g_status), "Downloading update · %d%%", pct);
+                }
+            }
             return;
         }
         if (g_phase == UPD_CHECKING) {
@@ -890,6 +1019,12 @@ self_update_status(void)
     return g_status;
 }
 
+float
+self_update_progress(void)
+{
+    return download_progress();
+}
+
 int
 self_update_begin(void)
 {
@@ -909,13 +1044,14 @@ self_update_begin(void)
         return 0;
     }
     os_mkdirs(g_work);
-    if (!start_curl(g_url, g_pkg, 0)) {
+    g_dl_attempt = 0;
+    if (!start_package_download()) {
         g_phase = UPD_FAILED;
         set_status("Could not start download");
         return 0;
     }
     g_phase = UPD_DOWNLOADING;
-    set_status("Downloading update");
+    set_status("Starting download");
     return 1;
 }
 

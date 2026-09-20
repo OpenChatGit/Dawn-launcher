@@ -620,9 +620,12 @@ update_modal_tick(Platform *platform, float dt)
     int over_close;
     int over_ok;
     int over_cancel;
+    float progress = (busy && platform->update_progress) ? platform->update_progress() : -1.0f;
+    int pct;
     wchar_t title[64];
     wchar_t body[160];
     wchar_t status_w[160];
+    wchar_t ok_label[24];
     const char *ver = platform->update_version ? platform->update_version() : "";
     const char *status = platform->update_status ? platform->update_status() : "";
     char line[160];
@@ -659,6 +662,29 @@ update_modal_tick(Platform *platform, float dt)
         os_utf8_to_wide(status, status_w, 160);
     } else {
         status_w[0] = 0;
+    }
+    if (progress < 0.0f) {
+        progress = 0.0f;
+    }
+    if (progress > 1.0f) {
+        progress = 1.0f;
+    }
+    pct = (int)(progress * 100.0f + 0.5f);
+    if (pct < 0) {
+        pct = 0;
+    }
+    if (pct > 100) {
+        pct = 100;
+    }
+    if (!busy) {
+        wcscpy(ok_label, L"Update");
+    } else if (status && strstr(status, "Install")) {
+        wcscpy(ok_label, L"Installing");
+    } else if (pct < 1 || (status && strstr(status, "Starting"))) {
+        wcscpy(ok_label, L"Starting");
+    } else {
+        snprintf(line, sizeof(line), "%d%%", pct);
+        os_utf8_to_wide(line, ok_label, 24);
     }
 
     modal_draw_overlay(platform->hdc, (float)platform->width, (float)platform->height, 1.0f);
@@ -698,7 +724,8 @@ update_modal_tick(Platform *platform, float dt)
         g_hover_update_close,
         1.0f,
         0,
-        s
+        s,
+        -1.0f
     );
     modal_draw_button(
         platform->hdc,
@@ -706,12 +733,13 @@ update_modal_tick(Platform *platform, float dt)
         btn_y,
         btn_w,
         btn_h,
-        busy ? L"Working" : L"Update",
+        ok_label,
         ICON_DOWNLOAD,
         g_hover_update_ok,
         1.0f,
         busy,
-        s
+        s,
+        busy ? progress : -1.0f
     );
 
     if (!platform->mouse_pressed) {

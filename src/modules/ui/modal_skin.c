@@ -338,18 +338,49 @@ modal_draw_button(
     float hover,
     float anim,
     int disabled,
-    float scale
+    float scale,
+    float progress
 )
 {
     const ThemeChrome *chrome = theme_chrome();
     float radius = h * 0.28f;
-    float use_hover = disabled ? 0.0f : hover;
+    int busy_bar = progress >= 0.0f;
+    float use_hover = (disabled && !busy_bar) ? 0.0f : hover;
     uint32_t fill = modal_button_fill(use_hover);
-    uint32_t fg = disabled ? chrome->muted : (use_hover > 0.2f ? chrome->hover : chrome->title_color);
+    uint32_t fg = (disabled && !busy_bar) ? chrome->muted : (use_hover > 0.2f ? chrome->hover : chrome->title_color);
     float pad = (float)modal_px(12, scale);
     float icon_s = (float)modal_px(20, scale);
+    int alpha = (int)(anim * ((disabled && !busy_bar) ? 180.0f : 255.0f));
 
-    icon_round_rect(hdc, x, y, w, h, radius, fill, (int)(anim * (disabled ? 180.0f : 255.0f)));
+    if (progress < 0.0f) {
+        progress = 0.0f;
+    }
+    if (progress > 1.0f) {
+        progress = 1.0f;
+    }
+    icon_round_rect(hdc, x, y, w, h, radius, fill, alpha);
+    if (busy_bar && progress > 0.01f) {
+        float fill_w = w * progress;
+        if (fill_w < radius) {
+            fill_w = radius;
+        }
+        if (fill_w > w) {
+            fill_w = w;
+        }
+        icon_round_rect_corners(
+            hdc,
+            x,
+            y,
+            fill_w,
+            h,
+            radius,
+            fill_w >= w - 0.5f ? radius : 0.0f,
+            fill_w >= w - 0.5f ? radius : 0.0f,
+            radius,
+            modal_mix(fill, chrome->hover, 88),
+            alpha
+        );
+    }
     icon_round_stroke(
         hdc,
         x,

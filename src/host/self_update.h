@@ -9,6 +9,7 @@ int self_update_available(void);
 const char *self_update_version(void);
 int self_update_busy(void);
 const char *self_update_status(void);
+float self_update_progress(void);
 int self_update_begin(void);
 void self_update_cancel(void);
 int self_update_should_quit(void);

@@ -323,7 +323,8 @@ secret_tick(Platform *platform, float dt)
         g_hover_secret,
         1.0f,
         g_secret_len <= 0,
-        s
+        s,
+        -1.0f
     );
 
     if (platform->mouse_pressed && over_close && platform->install_cancel) {
