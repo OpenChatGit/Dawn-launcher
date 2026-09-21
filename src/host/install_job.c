@@ -81,7 +81,6 @@ static const LangSpec *g_lang;
 #define DAWN_RELEASES_API "https://api.github.com/repos/isinternets/Dawn/releases/latest"
 #define DAWN_RELEASES_HTML "https://github.com/isinternets/Dawn/releases"
 #define DAWN_RELEASES_LATEST_HTML "https://github.com/isinternets/Dawn/releases/latest"
-#define DAWN_FALLBACK_ZIP "https://github.com/isinternets/Dawn/releases/download/0.1.3/Dawn-0.1.3.zip"
 #define DAWN_EXE_VERSION "86657.20.08.23.1800.d2_rc"
 
 typedef enum InstallStep {
@@ -3171,6 +3170,9 @@ start_child(const char *command, const char *work, int show_window, const char *
 
 static void queue_dawn(void);
 static void advance_dawn(void);
+static int dawn_is_current(void);
+static int wipe_tree(const char *dir);
+static int wipe_child(const char *dir, const char *name);
 static void apply_remove(void);
 static int collect_wipe_cb(const char *name, int is_dir, void *user);
 static void repair_vc_runtimes(const char *dir);
@@ -3196,7 +3198,14 @@ complete_install(void)
     }
     if (game_root_ok(g_dir) && dawn_ready(g_dir)) {
         g_installed = 1;
-        set_status(g_verify ? "Files verified" : "Dawn is ready");
+        if (g_launch_after) {
+            g_launch_after = 0;
+            if (!launch_game_tracked()) {
+                set_status("Dawn failed to start");
+            }
+        } else {
+            set_status(g_verify ? "Files verified" : "Dawn is ready");
+        }
     } else if (game_root_ok(g_dir)) {
         g_installed = 0;
         set_status("Need Dawn overlay");
@@ -3574,8 +3583,18 @@ copy_tree(const char *from, const char *to)
             if (!copy_tree(kids.path[i], dest)) {
                 ok = 0;
             }
-        } else if (!os_copy_file(kids.path[i], dest)) {
-            ok = 0;
+        } else {
+#ifdef _WIN32
+            {
+                DWORD attr = GetFileAttributesA(dest);
+                if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY)) {
+                    SetFileAttributesA(dest, attr & ~FILE_ATTRIBUTE_READONLY);
+                }
+            }
+#endif
+            if (!os_copy_file(kids.path[i], dest)) {
+                ok = 0;
+            }
         }
     }
     return ok;
@@ -3672,52 +3691,6 @@ find_dawn_payload(const char *root, char *out, size_t max)
     return 0;
 }
 
-static int
-find_bundled_dawn(char *out, size_t max)
-{
-    char parent[MAX_PATH];
-    char path[MAX_PATH];
-    char mid[MAX_PATH];
-    char cache[MAX_PATH];
-
-    if (path_parent(parent, sizeof(parent), g_root) &&
-        os_join(mid, sizeof(mid), parent, "Dawn-installer") &&
-        os_join(path, sizeof(path), mid, "bundle") &&
-        os_join(mid, sizeof(mid), path, "dawn-release") &&
-        find_dawn_payload(mid, out, max)) {
-        return 1;
-    }
-    if (os_join(path, sizeof(path), g_root, "tools") &&
-        os_join(mid, sizeof(mid), path, "dawn-release") &&
-        find_dawn_payload(mid, out, max)) {
-        return 1;
-    }
-    if (os_join(path, sizeof(path), g_root, "payload") &&
-        os_join(mid, sizeof(mid), path, "dawn") &&
-        find_dawn_payload(mid, out, max)) {
-        return 1;
-    }
-#ifdef _WIN32
-    if (copy_env("LOCALAPPDATA", cache, sizeof(cache)) &&
-        os_join(mid, sizeof(mid), cache, "DawnInstaller") &&
-        os_join(path, sizeof(path), mid, "releases") &&
-        os_dir_exists(path)) {
-        WalkKids kids;
-        int i;
-        kids.count = 0;
-        snprintf(kids.parent, sizeof(kids.parent), "%s", path);
-        os_list_dir(path, collect_wipe_cb, &kids);
-        for (i = kids.count - 1; i >= 0; i--) {
-            if (kids.is_dir[i] && find_dawn_payload(kids.path[i], out, max)) {
-                return 1;
-            }
-        }
-    }
-#else
-    (void)cache;
-#endif
-    return 0;
-}
 
 static int
 dawn_asset_ok(const char *url)
@@ -3963,6 +3936,16 @@ refresh_dawn_installed(void)
     g_dawn_installed_dirty = 0;
 }
 
+static int
+dawn_is_current(void)
+{
+    refresh_dawn_installed();
+    return dawn_ready(g_dir) &&
+        g_dawn_installed[0] &&
+        g_dawn_latest[0] &&
+        os_stricmp(g_dawn_installed, g_dawn_latest) == 0;
+}
+
 static void
 close_dawn_ver_proc(void)
 {
@@ -4205,15 +4188,6 @@ fetch_dawn_from_github(void)
         return 1;
     }
     return 0;
-}
-
-static void
-use_dawn_fallback_url(void)
-{
-    snprintf(g_dawn_zip_url, sizeof(g_dawn_zip_url), "%s", DAWN_FALLBACK_ZIP);
-    if (g_dawn_tag[0] == '\0') {
-        snprintf(g_dawn_tag, sizeof(g_dawn_tag), "0.1.3");
-    }
 }
 
 static int
@@ -4568,50 +4542,73 @@ set_dawn_language(const char *dir, const char *lang)
     }
 }
 
+static void
+write_release_json(const char *path, const char *tag)
+{
+    FILE *file;
+
+    if (!path || !path[0] || !tag || !tag[0]) {
+        return;
+    }
+#ifdef _WIN32
+    {
+        DWORD attr = GetFileAttributesA(path);
+        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY)) {
+            SetFileAttributesA(path, attr & ~FILE_ATTRIBUTE_READONLY);
+        }
+    }
+#endif
+    file = fopen(path, "wb");
+    if (!file) {
+        return;
+    }
+    fprintf(
+        file,
+        "{\n  \"schema\": 1,\n  \"release\": \"%s\",\n  \"gameBuild\": 86657,\n  \"runtimeDirectory\": \"Dawn\",\n  \"profileMode\": \"fresh\"\n}\n",
+        tag
+    );
+    fclose(file);
+}
+
+static void
+clear_dawn_runtime(const char *dir)
+{
+    char bin[MAX_PATH];
+    char x64[MAX_PATH];
+    char meta[MAX_PATH];
+
+    if (!dir || !dir[0]) {
+        return;
+    }
+    wipe_child(dir, "Dawn");
+    if (os_join(bin, sizeof(bin), dir, "bin") && os_join(x64, sizeof(x64), bin, "x64")) {
+        wipe_child(x64, "Dawn");
+    }
+    wipe_child(dir, "launch-destiny.cmd");
+    wipe_child(dir, "launch-destiny.sh");
+    wipe_child(dir, "release.json");
+    if (os_join(meta, sizeof(meta), dir, ".dawn")) {
+        wipe_child(meta, "release.json");
+    }
+}
+
 static int
 write_dawn_receipt(const char *dir, const char *payload)
 {
     char dawn_meta[MAX_PATH];
     char path[MAX_PATH];
-    char parent[MAX_PATH];
-    char src[MAX_PATH];
-    FILE *file;
+    const char *tag = g_dawn_tag[0] ? g_dawn_tag : "latest";
 
+    (void)payload;
     if (!os_join(dawn_meta, sizeof(dawn_meta), dir, ".dawn")) {
         return 0;
     }
     os_mkdirs(dawn_meta);
-    if (path_parent(parent, sizeof(parent), payload) &&
-        os_join(src, sizeof(src), parent, "release.json") &&
-        file_exists(src)) {
-        if (os_join(path, sizeof(path), dawn_meta, "release.json")) {
-            os_copy_file(src, path);
-        }
-        if (os_join(path, sizeof(path), dir, "release.json")) {
-            os_copy_file(src, path);
-        }
+    if (os_join(path, sizeof(path), dawn_meta, "release.json")) {
+        write_release_json(path, tag);
     }
-    if (os_join(path, sizeof(path), dawn_meta, "release.json") && !file_exists(path)) {
-        file = fopen(path, "wb");
-        if (file) {
-            fprintf(
-                file,
-                "{\n  \"schema\": 1,\n  \"release\": \"%s\",\n  \"gameBuild\": 86657,\n  \"runtimeDirectory\": \"Dawn\",\n  \"profileMode\": \"fresh\"\n}\n",
-                g_dawn_tag[0] ? g_dawn_tag : "latest"
-            );
-            fclose(file);
-        }
-        if (os_join(path, sizeof(path), dir, "release.json") && !file_exists(path)) {
-            file = fopen(path, "wb");
-            if (file) {
-                fprintf(
-                    file,
-                    "{\n  \"schema\": 1,\n  \"release\": \"%s\",\n  \"gameBuild\": 86657,\n  \"runtimeDirectory\": \"Dawn\",\n  \"profileMode\": \"fresh\"\n}\n",
-                    g_dawn_tag[0] ? g_dawn_tag : "latest"
-                );
-                fclose(file);
-            }
-        }
+    if (os_join(path, sizeof(path), dir, "release.json")) {
+        write_release_json(path, tag);
     }
     mark_dawn_installed_dirty();
     return 1;
@@ -4647,11 +4644,28 @@ deploy_dawn(const char *payload)
         !os_join(dest_root_dll, sizeof(dest_root_dll), g_dir, "steam_api64.dll")) {
         return 0;
     }
+    clear_dawn_runtime(g_dir);
+    if (os_dir_exists(dest_dawn) || os_dir_exists(dest_bin_dawn)) {
+        fail_job("Could not replace Dawn");
+        return 0;
+    }
     os_mkdirs(dest_dawn);
     os_mkdirs(dest_bin_dawn);
     if (!copy_tree(payload, g_dir) || !copy_tree(src_dawn, dest_bin_dawn)) {
         return 0;
     }
+#ifdef _WIN32
+    {
+        DWORD attr = GetFileAttributesA(dest_dll);
+        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY)) {
+            SetFileAttributesA(dest_dll, attr & ~FILE_ATTRIBUTE_READONLY);
+        }
+        attr = GetFileAttributesA(dest_root_dll);
+        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY)) {
+            SetFileAttributesA(dest_root_dll, attr & ~FILE_ATTRIBUTE_READONLY);
+        }
+    }
+#endif
     if (!os_copy_file(src_dll, dest_dll) || !os_copy_file(src_dll, dest_root_dll)) {
         return 0;
     }
@@ -4679,6 +4693,9 @@ extract_dawn_zip(void)
     if (!os_join(unpack, sizeof(unpack), work, "dawn-unpack")) {
         return 0;
     }
+    if (os_dir_exists(unpack) && !wipe_tree(unpack)) {
+        return 0;
+    }
     os_mkdirs(unpack);
     snprintf(command, sizeof(command), "tar -xf \"%s\" -C \"%s\"", zip, unpack);
     if (!run_hidden(command, work, 120000)) {
@@ -4697,7 +4714,8 @@ start_dawn_zip(void)
 
     g_step = STEP_DAWN_RELEASE;
     if (!g_dawn_zip_url[0]) {
-        snprintf(g_dawn_zip_url, sizeof(g_dawn_zip_url), "%s", DAWN_FALLBACK_ZIP);
+        fail_job("Could not fetch latest Dawn");
+        return 0;
     }
     depot_work_dir(work, MAX_PATH);
     if (!os_join(zip, sizeof(zip), work, "dawn-release.zip")) {
@@ -4758,7 +4776,7 @@ finish_depot_from_files(void)
     write_marker(g_dir);
     set_dawn_language(g_dir, lang_steam());
     preserve_depot_cache();
-    if (lang_only && dawn_ready(g_dir)) {
+    if (lang_only && dawn_is_current()) {
         g_phase = INSTALL_OK;
         g_installed = 1;
         g_user_start = 0;
@@ -4774,7 +4792,7 @@ finish_depot_from_files(void)
         }
         return;
     }
-    if (dawn_ready(g_dir)) {
+    if (dawn_is_current()) {
         complete_install();
         return;
     }
@@ -4800,8 +4818,6 @@ queue_dawn(void)
 static void
 advance_dawn(void)
 {
-    char payload[MAX_PATH];
-
     if (g_cancel) {
         g_dawn_next = DAWN_WORK_NONE;
         return;
@@ -4812,26 +4828,20 @@ advance_dawn(void)
         g_dawn_next = DAWN_WORK_FIND;
         return;
     case DAWN_WORK_FIND:
-        if (dawn_ready(g_dir)) {
+        if (!fetch_dawn_from_github()) {
+            g_dawn_next = DAWN_WORK_NONE;
+            fail_job("Could not fetch latest Dawn");
+            return;
+        }
+        refresh_dawn_installed();
+        if (dawn_ready(g_dir) &&
+            g_dawn_installed[0] &&
+            g_dawn_latest[0] &&
+            os_stricmp(g_dawn_installed, g_dawn_latest) == 0) {
             set_status("Installing Dawn");
             g_dawn_next = DAWN_WORK_FINISH;
             return;
         }
-        if (fetch_dawn_from_github()) {
-            g_dawn_next = DAWN_WORK_NONE;
-            start_dawn_zip();
-            return;
-        }
-        if (find_bundled_dawn(payload, sizeof(payload))) {
-            snprintf(g_dawn_payload, sizeof(g_dawn_payload), "%s", payload);
-            if (g_dawn_tag[0] == '\0') {
-                snprintf(g_dawn_tag, sizeof(g_dawn_tag), "0.1.3");
-            }
-            set_status("Installing Dawn");
-            g_dawn_next = DAWN_WORK_DEPLOY;
-            return;
-        }
-        use_dawn_fallback_url();
         g_dawn_next = DAWN_WORK_NONE;
         start_dawn_zip();
         return;
@@ -4841,21 +4851,13 @@ advance_dawn(void)
             g_dawn_next = DAWN_WORK_DEPLOY;
             return;
         }
-        if (find_bundled_dawn(payload, sizeof(payload))) {
-            snprintf(g_dawn_payload, sizeof(g_dawn_payload), "%s", payload);
-            g_dawn_next = DAWN_WORK_DEPLOY;
-            return;
-        }
         g_dawn_next = DAWN_WORK_NONE;
         fail_job("Dawn extract failed");
         return;
     case DAWN_WORK_DEPLOY:
         set_status("Installing Dawn");
         if (g_dawn_payload[0] && deploy_dawn(g_dawn_payload)) {
-            g_dawn_next = DAWN_WORK_FINISH;
-            return;
-        }
-        if (find_bundled_dawn(payload, sizeof(payload)) && deploy_dawn(payload)) {
+            refresh_dawn_installed();
             g_dawn_next = DAWN_WORK_FINISH;
             return;
         }
@@ -5332,9 +5334,13 @@ install_job_start(void)
         return 0;
     }
     if (install_complete(g_dir)) {
-        g_phase = INSTALL_OK;
-        g_installed = 1;
-        set_status("Already installed");
+        if (dawn_is_current()) {
+            g_phase = INSTALL_OK;
+            g_installed = 1;
+            set_status("Already installed");
+            return 1;
+        }
+        queue_dawn();
         return 1;
     }
     if (depots_ready(g_dir)) {
@@ -5575,7 +5581,7 @@ install_job_poll(void)
             !g_remove_next &&
             !g_verify &&
             depots_finished_throttled() &&
-            !dawn_ready(g_dir)) {
+            !dawn_is_current()) {
             finish_depot_from_files();
         }
         return;
@@ -5755,6 +5761,15 @@ install_job_launch(void)
             set_status("Game files incomplete");
             return 0;
         }
+        return 0;
+    }
+    if (!dawn_is_current()) {
+        if (g_busy) {
+            set_status("Installing Dawn");
+            return 0;
+        }
+        g_launch_after = 1;
+        queue_dawn();
         return 0;
     }
     if (!find_game_exe(exe, sizeof(exe))) {

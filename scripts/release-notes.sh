@@ -12,9 +12,9 @@ fi
 
 if [ "$KIND" = "official" ]; then
     cat > "$OUT" <<EOF
-The launcher can switch its own UI language in General (English by default, plus German). User settings now show Forsaken and Shadowkeep ownership, and Install/Play only work when you are signed in and both required DLCs are confirmed.
+Dawn is no longer bundled in the launcher. Install and Update always fetch the latest Dawn release from GitHub, so an older overlay cannot stay behind.
 
-The title shows the Dawn game version from GitHub so you can see current vs installed. The Settings row uses a gear icon. Simulate download and the F12 debug console stay out of production builds.
+If the installed Dawn version is outdated, Play becomes Update. That replace wipes the old Dawn files first and writes the new version on top.
 EOF
 else
     cat > "$OUT" <<EOF

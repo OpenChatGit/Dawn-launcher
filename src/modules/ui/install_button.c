@@ -346,6 +346,26 @@ is_ready(Platform *platform)
 }
 
 static int
+dawn_needs_update(Platform *platform)
+{
+    const char *local;
+    const char *latest;
+
+    if (!platform || !is_ready(platform)) {
+        return 0;
+    }
+    local = platform->dawn_version ? platform->dawn_version() : "";
+    latest = platform->dawn_latest ? platform->dawn_latest() : "";
+    if (!latest || !latest[0]) {
+        return 0;
+    }
+    if (!local || !local[0]) {
+        return 1;
+    }
+    return os_stricmp(local, latest) != 0;
+}
+
+static int
 is_busy(Platform *platform)
 {
     return platform->install_busy && platform->install_busy();
@@ -432,6 +452,11 @@ copy_label(Platform *platform, char *out, int max, IconId *icon)
         return;
     }
     if (is_ready(platform)) {
+        if (dawn_needs_update(platform)) {
+            snprintf(out, (size_t)max, "%s", i18n_tu(I18N_UPDATE));
+            *icon = ICON_DOWNLOAD;
+            return;
+        }
         snprintf(out, (size_t)max, "%s", i18n_tu(I18N_PLAY));
         *icon = ICON_PLAY;
         return;
@@ -1206,7 +1231,9 @@ install_button_tick(Platform *platform, float dt)
                 login_modal_open();
             }
         } else if (ready) {
-            if (platform->install_launch) {
+            if (dawn_needs_update(platform) && platform->install_start) {
+                platform->install_start();
+            } else if (platform->install_launch) {
                 platform->install_launch();
             }
         } else if (!is_signed_in(platform)) {

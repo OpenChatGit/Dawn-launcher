@@ -53,7 +53,7 @@ if [ "$PLATFORM" = "windows" ] && command -v objdump >/dev/null 2>&1; then
 fi
 
 rm -rf "$STAGE"
-mkdir -p "$STAGE/tools/DepotDownloader" "$STAGE/tools/dawn-release" "$STAGE/themes" "$STAGE/assets"
+mkdir -p "$STAGE/tools/DepotDownloader" "$STAGE/themes" "$STAGE/assets"
 
 cp "$HOST" "$STAGE/$LAUNCHER_NAME"
 cp "$LOGIC" "$STAGE/"
@@ -102,21 +102,6 @@ fi
 
 if [ ! -f "$STAGE/tools/DepotDownloader/$DD_NAME" ]; then
     echo "DepotDownloader binary missing after extract" >&2
-    exit 1
-fi
-
-DAWN_BUNDLE_URL="https://github.com/isinternets/Dawn/releases/download/v0.1.3/Dawn-0.1.3.zip"
-DAWN_BUNDLE_ZIP="$DIST/dawn-0.1.3.zip"
-curl -fsSL -A "DawnLauncher/${APP_VERSION:-0.3.2}" "$DAWN_BUNDLE_URL" -o "$DAWN_BUNDLE_ZIP"
-python - "$DAWN_BUNDLE_ZIP" "$STAGE/tools/dawn-release" <<'PY'
-import sys, zipfile
-zip_path, dest = sys.argv[1], sys.argv[2]
-with zipfile.ZipFile(zip_path) as zf:
-    zf.extractall(dest)
-PY
-rm -f "$DAWN_BUNDLE_ZIP"
-if ! find "$STAGE/tools/dawn-release" -name "steam_api64.dll" | grep -q .; then
-    echo "bundled Dawn payload missing steam_api64.dll" >&2
     exit 1
 fi
 
