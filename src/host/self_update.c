@@ -446,10 +446,12 @@ static int
 pick_release(const char *json)
 {
     const char *cursor = json;
+    char latest_ver[32];
     char best_ver[32];
     char best_url[1024];
     uint64_t best_size = 0;
 
+    latest_ver[0] = '\0';
     best_ver[0] = '\0';
     best_url[0] = '\0';
     g_version[0] = '\0';
@@ -499,13 +501,18 @@ pick_release(const char *json)
             asset = strstr(block, ASSET_NAME);
             if (asset) {
                 uint64_t size = 0;
+                const char *plain = (tag[0] == 'v' || tag[0] == 'V') ? tag + 1 : tag;
                 find_asset_url(block, ASSET_NAME, url, sizeof(url), &size);
-                if (strncmp(url, "https://", 8) == 0 &&
-                    (is_dev_build() || version_newer(APP_VERSION, tag)) &&
-                    version_newer(best_ver[0] ? best_ver : "0.0.0", tag)) {
-                    snprintf(best_ver, sizeof(best_ver), "%s", tag[0] == 'v' || tag[0] == 'V' ? tag + 1 : tag);
-                    snprintf(best_url, sizeof(best_url), "%s", url);
-                    best_size = size;
+                if (strncmp(url, "https://", 8) == 0) {
+                    if (version_newer(latest_ver[0] ? latest_ver : "0.0.0", plain)) {
+                        snprintf(latest_ver, sizeof(latest_ver), "%s", plain);
+                    }
+                    if ((is_dev_build() || version_newer(APP_VERSION, plain)) &&
+                        version_newer(best_ver[0] ? best_ver : "0.0.0", plain)) {
+                        snprintf(best_ver, sizeof(best_ver), "%s", plain);
+                        snprintf(best_url, sizeof(best_url), "%s", url);
+                        best_size = size;
+                    }
                 }
             }
             free(block);
@@ -513,13 +520,12 @@ pick_release(const char *json)
         cursor = end;
     }
 
-    if (!best_ver[0] || !best_url[0]) {
-        return 0;
+    if (best_ver[0] && best_url[0]) {
+        snprintf(g_version, sizeof(g_version), "%s", best_ver);
+        snprintf(g_url, sizeof(g_url), "%s", best_url);
+        g_bytes_total = best_size;
     }
-    snprintf(g_version, sizeof(g_version), "%s", best_ver);
-    snprintf(g_url, sizeof(g_url), "%s", best_url);
-    g_bytes_total = best_size;
-    return 1;
+    return latest_ver[0] != '\0';
 }
 
 static int
@@ -730,6 +736,12 @@ finish_check(int ok)
         return;
     }
     free(json);
+    if (!g_url[0]) {
+        g_phase = UPD_IDLE;
+        g_next_check = os_tick_ms() + CHECK_MS;
+        set_status("");
+        return;
+    }
     g_phase = UPD_READY;
     {
         char line[160];

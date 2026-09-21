@@ -1,6 +1,7 @@
 #include "shared/theme.h"
 #include "shared/icons.h"
 #include "theme_desc.h"
+#include "i18n/i18n.h"
 
 #include <math.h>
 #include <string.h>
@@ -193,7 +194,7 @@ draw_play_chip(
     }
     icon_draw(platform->hdc, icon, ix, iy, icon_size, fg, 1.4f);
 
-    const wchar_t *label = playing ? L"PAUSE" : L"PLAY";
+    const wchar_t *label = playing ? i18n_t(I18N_THEME_PAUSE) : i18n_t(I18N_THEME_PLAY);
     float text_x = x + pad + icon_box + h * 0.12f;
     float text_w = x + w - pad - text_x;
     float px = (float)((int)(h * 0.32f + 0.5f));

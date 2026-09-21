@@ -23,6 +23,7 @@ void steam_auth_set_dd_user(const char *username);
 int steam_auth_owns_d2(void);
 int steam_auth_owns_forsaken(void);
 int steam_auth_owns_shadowkeep(void);
+const char *steam_auth_play_block(void);
 
 #ifdef __cplusplus
 }

@@ -1,4 +1,5 @@
 #include "login_modal.h"
+#include "i18n/i18n.h"
 #include "modal_skin.h"
 #include "settings_modal.h"
 #include "shared/icons.h"
@@ -6,6 +7,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <wchar.h>
 
 #define LOGIN_USER_MAX 64
 
@@ -241,7 +243,7 @@ login_modal_tick(Platform *platform, float dt)
         y + (float)modal_px(14, s),
         L.w - inset * 2.0f - L.close_s,
         (float)modal_px(20, s),
-        L"Sign in",
+        i18n_t(I18N_SIGN_IN),
         s,
         g_anim
     );
@@ -250,7 +252,8 @@ login_modal_tick(Platform *platform, float dt)
         wchar_t status_w[160];
         status_w[0] = 0;
         if (status && status[0]) {
-            os_utf8_to_wide(status, status_w, 160);
+            wcsncpy(status_w, i18n_status_w(status), 159);
+            status_w[159] = 0;
         }
         modal_draw_subtitle(
             platform->hdc,
@@ -258,7 +261,7 @@ login_modal_tick(Platform *platform, float dt)
             y + (float)modal_px(36, s),
             L.w - inset * 2.0f - L.close_s,
             (float)modal_px(18, s),
-            status_w[0] ? status_w : L"Continue with Steam",
+            status_w[0] ? status_w : i18n_t(I18N_CONTINUE_STEAM),
             s,
             g_anim
         );
@@ -270,7 +273,7 @@ login_modal_tick(Platform *platform, float dt)
         L.steam_y,
         L.steam_w,
         L.steam_h,
-        L"Sign in with Steam",
+        i18n_t(I18N_SIGN_IN_STEAM),
         ICON_STEAM,
         g_hover_steam,
         g_anim,

@@ -2,6 +2,7 @@
 #include "login_modal.h"
 #include "settings_modal.h"
 #include "modal_skin.h"
+#include "i18n/i18n.h"
 #include "shared/chrome.h"
 #include "shared/icons.h"
 #include "shared/theme.h"
@@ -80,6 +81,9 @@ static float g_hover_tip;
 static float g_menu;
 static int g_open;
 static uint32_t g_copied_ms;
+static char g_dawn_ver[48];
+static int g_title_tw;
+static float g_title_scale;
 
 static int
 hit(int mx, int my, int x, int y, int w, int h)
@@ -137,7 +141,7 @@ layout(Platform *platform, TitlebarLayout *out)
         float gap = UPDATE_ICON_GAP * s;
         float tw = 0.0f;
         if (platform->hdc) {
-            tw = icon_measure_label(platform->hdc, L"New Version", text_px, 600);
+            tw = icon_measure_label(platform->hdc, i18n_t(I18N_NEW_VERSION), text_px, 600);
         }
         if (tw < 8.0f) {
             tw = 11.0f * text_px * 0.72f;
@@ -199,7 +203,7 @@ layout(Platform *platform, TitlebarLayout *out)
         float pad = 8.0f * s;
 
         if (platform->hdc) {
-            tw = icon_measure_label(platform->hdc, L"Copy ID", copy_px, 600);
+            tw = icon_measure_label(platform->hdc, i18n_t(I18N_COPY_ID), copy_px, 600);
         }
         if (tw < 8.0f) {
             tw = 7.0f * copy_px * 0.62f;
@@ -298,7 +302,7 @@ update_chip(Platform *platform, const TitlebarLayout *L, float hover, int presse
         y,
         text_w,
         h,
-        L"New Version",
+        i18n_t(I18N_NEW_VERSION),
         fg,
         (float)px(UPDATE_TEXT_PX, s),
         600
@@ -517,7 +521,7 @@ account_menu(
         ident_y + 2.0f,
         name_w_max,
         name_h,
-        signed_in && name_w[0] ? name_w : L"Guest",
+        signed_in && name_w[0] ? name_w : i18n_t(I18N_GUEST),
         chrome->title_color,
         (float)px(13, s),
         600,
@@ -529,7 +533,7 @@ account_menu(
         ident_y + name_h - 1.0f,
         status_w,
         (float)L->ident_h - name_h,
-        signed_in ? L"Signed in" : L"Not signed in",
+        signed_in ? i18n_t(I18N_SIGNED_IN) : i18n_t(I18N_NOT_SIGNED_IN),
         chrome->muted,
         (float)px(12, s),
         600,
@@ -558,7 +562,7 @@ account_menu(
             cy,
             cw,
             ch,
-            copied ? L"Copied" : L"Copy ID",
+            copied ? i18n_t(I18N_COPIED) : i18n_t(I18N_COPY_ID),
             fg,
             (float)px(12, s),
             600,
@@ -579,7 +583,7 @@ account_menu(
         settings_hover,
         settings_pressed,
         ICON_SETTINGS,
-        L"Settings"
+        i18n_t(I18N_SETTINGS)
     );
     menu_pill(
         platform,
@@ -589,7 +593,7 @@ account_menu(
         item_hover,
         item_pressed,
         ICON_LOG_IN,
-        signed_in ? L"Sign out" : L"Sign in"
+        signed_in ? i18n_t(I18N_SIGN_OUT) : i18n_t(I18N_SIGN_IN)
     );
 }
 
@@ -649,17 +653,14 @@ update_modal_tick(Platform *platform, float dt)
     if (ver && ver[0]) {
         snprintf(line, sizeof(line), "Dawn %s", ver);
     } else {
-        snprintf(line, sizeof(line), "Update");
+        snprintf(line, sizeof(line), "%s", i18n_tu(I18N_UPDATE));
     }
     os_utf8_to_wide(line, title, 64);
-    os_utf8_to_wide(
-        busy ? "Downloading the new launcher and replacing this install." :
-            "Download the official build, replace this launcher, and restart.",
-        body,
-        160
-    );
+    wcsncpy(body, busy ? i18n_t(I18N_UPDATE_BODY_BUSY) : i18n_t(I18N_UPDATE_BODY), 159);
+    body[159] = 0;
     if (status && status[0]) {
-        os_utf8_to_wide(status, status_w, 160);
+        wcsncpy(status_w, i18n_status_w(status), 159);
+        status_w[159] = 0;
     } else {
         status_w[0] = 0;
     }
@@ -677,11 +678,11 @@ update_modal_tick(Platform *platform, float dt)
         pct = 100;
     }
     if (!busy) {
-        wcscpy(ok_label, L"Update");
+        wcscpy(ok_label, i18n_t(I18N_UPDATE));
     } else if (status && strstr(status, "Install")) {
-        wcscpy(ok_label, L"Installing");
+        wcscpy(ok_label, i18n_t(I18N_INSTALLING));
     } else if (pct < 1 || (status && strstr(status, "Starting"))) {
-        wcscpy(ok_label, L"Starting");
+        wcscpy(ok_label, i18n_t(I18N_STARTING));
     } else {
         snprintf(line, sizeof(line), "%d%%", pct);
         os_utf8_to_wide(line, ok_label, 24);
@@ -719,7 +720,7 @@ update_modal_tick(Platform *platform, float dt)
         btn_y,
         btn_w,
         btn_h,
-        L"Not now",
+        i18n_t(I18N_NOT_NOW),
         ICON_X,
         g_hover_update_close,
         1.0f,
@@ -851,15 +852,62 @@ titlebar_tick(Platform *platform, float dt)
     );
 
     const ThemeChrome *chrome = theme_chrome();
-    platform->draw_label(
-        L.pad + px(4, platform->dpi_scale),
-        px(16, platform->dpi_scale),
-        chrome->title,
-        chrome->title_color,
-        px(11, platform->dpi_scale),
-        600,
-        px(3, platform->dpi_scale)
-    );
+    {
+        float s = platform->dpi_scale > 0.1f ? platform->dpi_scale : 1.0f;
+        int title_px = px(11, s);
+        int title_x = L.pad + px(4, s);
+        int title_y = px(16, s);
+        int track = px(3, s);
+        const char *local = platform->dawn_version ? platform->dawn_version() : "";
+        const char *latest = platform->dawn_latest ? platform->dawn_latest() : "";
+        uint32_t ver_color = chrome->muted;
+        char ver[48];
+
+        ver[0] = '\0';
+        if (local && local[0] && latest && latest[0] && strcmp(local, latest) != 0) {
+            snprintf(ver, sizeof(ver), "v%s → v%s", local, latest);
+            ver_color = chrome->hover;
+        } else if (local && local[0]) {
+            snprintf(ver, sizeof(ver), "v%s", local);
+        } else if (latest && latest[0]) {
+            snprintf(ver, sizeof(ver), "v%s", latest);
+        }
+        if (s != g_title_scale || strcmp(ver, g_dawn_ver) != 0) {
+            int n = (int)strlen(chrome->title);
+            g_title_tw = 0;
+            if (platform->measure_label) {
+                platform->measure_label(chrome->title, title_px, 600, &g_title_tw, NULL, NULL);
+            }
+            if (g_title_tw < 8) {
+                g_title_tw = n * title_px * 6 / 10;
+            }
+            if (n > 1) {
+                g_title_tw += track * (n - 1);
+            }
+            snprintf(g_dawn_ver, sizeof(g_dawn_ver), "%s", ver);
+            g_title_scale = s;
+        }
+        platform->draw_label(
+            title_x,
+            title_y,
+            chrome->title,
+            chrome->title_color,
+            title_px,
+            600,
+            track
+        );
+        if (g_dawn_ver[0]) {
+            platform->draw_label(
+                title_x + g_title_tw + px(8, s),
+                title_y,
+                g_dawn_ver,
+                ver_color,
+                title_px,
+                500,
+                0
+            );
+        }
+    }
 
     if (g_update_open) {
         update_modal_tick(platform, dt);

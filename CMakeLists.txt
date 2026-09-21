@@ -25,8 +25,22 @@ else()
     add_compile_definitions(_GNU_SOURCE)
 endif()
 
+# Test-only tools (simulate download, F12 debug console). Off in Release/CI.
+set(_app_dev_default ON)
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(_app_dev_default OFF)
+endif()
+option(APP_DEV "Enable developer/test tools" ${_app_dev_default})
+if(APP_DEV)
+    set(APP_DEV_VALUE 1)
+else()
+    set(APP_DEV_VALUE 0)
+endif()
+add_compile_definitions(APP_DEV=${APP_DEV_VALUE})
+
 set(APP_LOGIC_SRC
     src/modules/app.c
+    src/modules/i18n/i18n.c
     src/modules/state/state.c
     src/modules/ui/ui.c
     src/modules/ui/titlebar.c

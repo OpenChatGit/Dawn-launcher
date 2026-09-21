@@ -1,4 +1,5 @@
 #include "app.h"
+#include "i18n/i18n.h"
 #include "state/state.h"
 #include "ui/ui.h"
 #include "shared/theme.h"
@@ -8,6 +9,7 @@ app_init(AppMemory *memory)
 {
     AppState *state = state_from_memory(memory);
     state_init(state);
+    i18n_init();
     memory->initialized = 1;
 }
 

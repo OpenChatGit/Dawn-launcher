@@ -339,11 +339,25 @@ build_icon(GraphicsPath *path, IconId id)
         path->StartFigure();
         path->AddLine(PointF(14.8f, 14.8f), PointF(19.5f, 19.5f));
         break;
-    case ICON_SETTINGS:
-        path->AddEllipse(9.2f, 9.2f, 5.6f, 5.6f);
+    case ICON_SETTINGS: {
+        PointF gear[24];
+        const float step = 1.04719755f;
+        const float half = 0.32f;
+        int tooth;
+        for (tooth = 0; tooth < 6; tooth++) {
+            float mid = (float)tooth * step - 1.57079633f;
+            int i = tooth * 4;
+            gear[i + 0] = PointF(12.0f + cosf(mid - half) * 6.7f, 12.0f + sinf(mid - half) * 6.7f);
+            gear[i + 1] = PointF(12.0f + cosf(mid - half) * 10.6f, 12.0f + sinf(mid - half) * 10.6f);
+            gear[i + 2] = PointF(12.0f + cosf(mid + half) * 10.6f, 12.0f + sinf(mid + half) * 10.6f);
+            gear[i + 3] = PointF(12.0f + cosf(mid + half) * 6.7f, 12.0f + sinf(mid + half) * 6.7f);
+        }
+        path->AddLines(gear, 24);
+        path->CloseFigure();
         path->StartFigure();
-        path->AddEllipse(4.4f, 4.4f, 15.2f, 15.2f);
+        path->AddEllipse(9.0f, 9.0f, 6.0f, 6.0f);
         break;
+    }
     case ICON_CHEVRON_DOWN:
         path->AddLine(PointF(6.0f, 9.0f), PointF(12.0f, 15.0f));
         path->AddLine(PointF(12.0f, 15.0f), PointF(18.0f, 9.0f));

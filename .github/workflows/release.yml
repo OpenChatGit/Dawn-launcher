@@ -69,7 +69,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAPP_VERSION="$APP_VERSION"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAPP_DEV=OFF -DAPP_VERSION="$APP_VERSION"
           cmake --build build --target host --target app_logic
 
       - name: Package
@@ -101,7 +101,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DAPP_VERSION="$APP_VERSION"
+          cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DAPP_DEV=OFF -DAPP_VERSION="$APP_VERSION"
           cmake --build build-linux --target host --target app_logic
 
       - name: Package

@@ -47,5 +47,7 @@ void install_job_game_stop(void);
 void install_job_set_language(const char *steam);
 const char *install_job_language(void);
 const char *install_job_language_label(void);
+const char *install_job_dawn_version(void);
+const char *install_job_dawn_latest(void);
 
 #endif

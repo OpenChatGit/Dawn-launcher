@@ -82,7 +82,9 @@ debug_console_open(void)
 void
 debug_console_toggle(void)
 {
-#ifdef _WIN32
+#if !APP_DEV
+    return;
+#elif defined(_WIN32)
     ensure_lock();
     EnterCriticalSection(&g_lock);
     if (g_open) {

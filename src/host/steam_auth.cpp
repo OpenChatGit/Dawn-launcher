@@ -170,7 +170,11 @@ http_run_curl(char *const argv[], const char *body_path, long *status_out)
 #define STEAM_DD_USER_MAX 64
 #define D2_APP 1085660u
 #define D2_FORSAKEN 1090150u
+#define D2_FORSAKEN_B 1090151u
+#define D2_FORSAKEN_C 1090152u
 #define D2_SHADOWKEEP 1090200u
+#define D2_SHADOWKEEP_B 1090201u
+#define D2_SHADOWKEEP_C 1090202u
 #define D2_VERSION_FORSAKEN 8
 #define D2_VERSION_SHADOWKEEP 32
 #define D2_VERSION_Y2_PASS 16
@@ -328,25 +332,54 @@ load_key(const char *root)
     }
 
     char path[MAX_PATH];
-    snprintf(path, sizeof(path), "%s/.env", root ? root : ".");
-    FILE *file = fopen(path, "rb");
-    if (!file) {
-        snprintf(path, sizeof(path), "%s\\.env", root ? root : ".");
-        file = fopen(path, "rb");
+    char extra[MAX_PATH];
+    const char *dirs[4];
+    int i;
+    int n = 0;
+
+    dirs[n++] = root ? root : ".";
+    if (os_exe_dir(extra, sizeof(extra))) {
+        dirs[n++] = extra;
     }
-    if (!file) {
-        return;
-    }
-    char line[384];
-    while (fgets(line, sizeof(line), file)) {
-        trim_line(line);
-        if (!g_key[0] && strncmp(line, "STEAM_API_KEY=", 14) == 0) {
-            copy_env_value(g_key, (int)sizeof(g_key), line + 14);
-        } else if (!g_bungie_key[0] && strncmp(line, "BUNGIE_API_KEY=", 15) == 0) {
-            copy_env_value(g_bungie_key, (int)sizeof(g_bungie_key), line + 15);
+    {
+        char app[MAX_PATH];
+        if (os_app_root(app, sizeof(app), root) && strcmp(app, dirs[0]) != 0) {
+            static char app_copy[MAX_PATH];
+            snprintf(app_copy, sizeof(app_copy), "%s", app);
+            dirs[n++] = app_copy;
         }
     }
-    fclose(file);
+    {
+        char data[MAX_PATH];
+        os_data_dir(data, sizeof(data));
+        if (data[0]) {
+            static char data_copy[MAX_PATH];
+            snprintf(data_copy, sizeof(data_copy), "%s", data);
+            dirs[n++] = data_copy;
+        }
+    }
+    for (i = 0; i < n && (!g_key[0] || !g_bungie_key[0]); i++) {
+        FILE *file;
+        snprintf(path, sizeof(path), "%s/.env", dirs[i] ? dirs[i] : ".");
+        file = fopen(path, "rb");
+        if (!file) {
+            snprintf(path, sizeof(path), "%s\\.env", dirs[i] ? dirs[i] : ".");
+            file = fopen(path, "rb");
+        }
+        if (!file) {
+            continue;
+        }
+        char line[384];
+        while (fgets(line, sizeof(line), file)) {
+            trim_line(line);
+            if (!g_key[0] && strncmp(line, "STEAM_API_KEY=", 14) == 0) {
+                copy_env_value(g_key, (int)sizeof(g_key), line + 14);
+            } else if (!g_bungie_key[0] && strncmp(line, "BUNGIE_API_KEY=", 15) == 0) {
+                copy_env_value(g_bungie_key, (int)sizeof(g_bungie_key), line + 15);
+            }
+        }
+        fclose(file);
+    }
 }
 
 static void
@@ -792,6 +825,7 @@ load_session(void)
     }
     if (g_id[0] && g_name[0]) {
         fetch_owned(g_id);
+        save_session();
         g_phase = STEAM_READY;
         set_status("Signed in");
     }
@@ -1188,6 +1222,22 @@ json_has_appid(const char *json, unsigned appid)
     }
     snprintf(needle, sizeof(needle), "\"appid\": \"%u\"", appid);
     return strstr(json, needle) != NULL;
+}
+
+static int
+json_has_any_appid(const char *json, const unsigned *ids, int count)
+{
+    int i;
+
+    if (!json || !ids || count <= 0) {
+        return 0;
+    }
+    for (i = 0; i < count; i++) {
+        if (json_has_appid(json, ids[i])) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static int
@@ -1625,7 +1675,10 @@ fetch_bungie_versions(const char *steamid, long *versions)
         return 0;
     }
     if (!json_long(json, "ErrorCode", &err) || err != 1) {
-        debug_log("bungie: membership lookup failed");
+        char status_name[64];
+        status_name[0] = '\0';
+        json_string(json, "ErrorStatus", status_name, (int)sizeof(status_name));
+        debug_log("bungie: membership lookup failed err=%ld %s", err, status_name);
         return 0;
     }
     if (!json_long(json, "membershipType", &membership_type) ||
@@ -1647,7 +1700,11 @@ fetch_bungie_versions(const char *steamid, long *versions)
         return 0;
     }
     if (!json_long(json, "ErrorCode", &err) || err != 1) {
-        debug_log("bungie: profile lookup failed");
+        if (err == 1665) {
+            debug_log("bungie: Destiny profile is private");
+        } else {
+            debug_log("bungie: profile lookup failed err=%ld", err);
+        }
         return 0;
     }
     if (!json_long(json, "versionsOwned", versions)) {
@@ -1657,99 +1714,250 @@ fetch_bungie_versions(const char *steamid, long *versions)
     return 1;
 }
 
+static int
+file_contains_text(const char *path, const char *needle)
+{
+    FILE *file;
+    char buf[8192];
+    size_t keep = 0;
+    size_t need;
+
+    if (!path || !needle || !needle[0]) {
+        return 0;
+    }
+    need = strlen(needle);
+    if (need >= sizeof(buf)) {
+        return 0;
+    }
+    file = fopen(path, "rb");
+    if (!file) {
+        return 0;
+    }
+    for (;;) {
+        size_t n = fread(buf + keep, 1, sizeof(buf) - 1 - keep, file);
+        size_t total = keep + n;
+        if (total == 0) {
+            break;
+        }
+        buf[total] = '\0';
+        if (strstr(buf, needle)) {
+            fclose(file);
+            return 1;
+        }
+        if (n == 0) {
+            break;
+        }
+        if (total >= need) {
+            memmove(buf, buf + total - (need - 1), need - 1);
+            keep = need - 1;
+        } else {
+            keep = total;
+        }
+    }
+    fclose(file);
+    return 0;
+}
+
+static int
+file_has_appid(const char *path, unsigned appid)
+{
+    char needle[32];
+
+    snprintf(needle, sizeof(needle), "\"%u\"", appid);
+    return file_contains_text(path, needle);
+}
+
+static unsigned
+steam_account_id(const char *steamid)
+{
+    unsigned long long id;
+
+    if (!steamid || !steamid[0]) {
+        return 0;
+    }
+    id = strtoull(steamid, NULL, 10);
+    if (id < 76561197960265728ULL) {
+        return 0;
+    }
+    return (unsigned)(id - 76561197960265728ULL);
+}
+
+static int
+local_userdata_owns(const char *root, const char *steamid, unsigned appid)
+{
+    unsigned acc = steam_account_id(steamid);
+    char accs[16];
+    char path[MAX_PATH];
+    char tmp[MAX_PATH];
+
+    if (!acc) {
+        return 0;
+    }
+    snprintf(accs, sizeof(accs), "%u", acc);
+    if (!os_join(tmp, sizeof(tmp), root, "userdata") || !os_join(tmp, sizeof(tmp), tmp, accs)) {
+        return 0;
+    }
+    if (os_join(path, sizeof(path), tmp, "7") &&
+        os_join(path, sizeof(path), path, "remote") &&
+        os_join(path, sizeof(path), path, "sharedconfig.vdf") &&
+        file_has_appid(path, appid)) {
+        return 1;
+    }
+    if (os_join(path, sizeof(path), tmp, "config") &&
+        os_join(path, sizeof(path), path, "localconfig.vdf") &&
+        file_has_appid(path, appid)) {
+        return 1;
+    }
+    return 0;
+}
+
+static int
+local_owns_app(const char *steamid, unsigned appid)
+{
+    char root[MAX_PATH];
+
+    /* Only this SteamID's userdata. Registry/appmanifest belong to whichever
+     * client is logged in on the machine, not the Dawn session. */
+    return steam_client_root(root, (int)sizeof(root)) &&
+        local_userdata_owns(root, steamid, appid);
+}
+
+static int
+local_owns_any(const char *steamid, const unsigned *ids, int count)
+{
+    int i;
+
+    if (!ids || count <= 0) {
+        return 0;
+    }
+    for (i = 0; i < count; i++) {
+        if (local_owns_app(steamid, ids[i])) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+steam_owned_games(const char *steamid, char *json, int json_max, DWORD *status_out)
+{
+    char key[STEAM_KEY_MAX];
+    char json_in[280];
+    char enc[560];
+    char path_utf8[1100];
+    wchar_t path[1100];
+    int ok;
+
+    copy_locked(key, (int)sizeof(key), g_key);
+    if (!key[0] || !steamid || !steamid[0] || !json || json_max < 8) {
+        SecureZeroMemory(key, sizeof(key));
+        return 0;
+    }
+    /*
+     * GetOwnedGames never returns DLC. Filter Destiny 2 only, pass steamid as a
+     * number, and mark free-to-play titles so a public library is not empty.
+     */
+    snprintf(
+        json_in,
+        sizeof(json_in),
+        "{\"steamid\":%s,\"include_appinfo\":false,\"include_played_free_games\":true,"
+        "\"include_free_sub\":true,\"appids_filter\":[%u]}",
+        steamid,
+        D2_APP
+    );
+    url_encode(json_in, enc, (int)sizeof(enc));
+    snprintf(
+        path_utf8,
+        sizeof(path_utf8),
+        "/IPlayerService/GetOwnedGames/v0001/?key=%s&format=json&steamid=%s"
+        "&include_played_free_games=1&include_free_sub=1&input_json=%s",
+        key,
+        steamid,
+        enc
+    );
+    MultiByteToWideChar(CP_UTF8, 0, path_utf8, -1, path, 1100);
+    json[0] = '\0';
+    ok = http_exchange(
+        L"api.steampowered.com",
+        INTERNET_DEFAULT_HTTPS_PORT,
+        L"GET",
+        path,
+        NULL,
+        0,
+        NULL,
+        json,
+        json_max,
+        NULL,
+        status_out
+    );
+    SecureZeroMemory(path_utf8, sizeof(path_utf8));
+    SecureZeroMemory(path, sizeof(path));
+    SecureZeroMemory(key, sizeof(key));
+    return ok;
+}
+
+static void
+mark_owned(int *slot)
+{
+    if (slot) {
+        *slot = 1;
+    }
+}
+
 static void
 fetch_owned(const char *steamid)
 {
-    char key[STEAM_KEY_MAX];
-    int steam_games = 0;
-    int steam_d2 = 0;
-    int steam_forsaken = 0;
-    int steam_shadowkeep = 0;
+    static const unsigned k_forsaken[] = { D2_FORSAKEN, D2_FORSAKEN_B, D2_FORSAKEN_C };
+    static const unsigned k_shadowkeep[] = { D2_SHADOWKEEP, D2_SHADOWKEEP_B, D2_SHADOWKEEP_C };
+    int steam_visible = 0;
+    int bungie_ok = 0;
 
     g_owns_known = 0;
     g_owns_d2 = -1;
     g_owns_forsaken = -1;
     g_owns_shadowkeep = -1;
 
-    copy_locked(key, (int)sizeof(key), g_key);
-    if (key[0] && steamid && steamid[0]) {
-        char json_in[320];
-        snprintf(
-            json_in,
-            sizeof(json_in),
-            "{\"steamid\":\"%s\",\"include_played_free_games\":true,\"include_free_sub\":true,"
-            "\"appids_filter\":[%u,%u,%u]}",
-            steamid,
-            D2_APP,
-            D2_FORSAKEN,
-            D2_SHADOWKEEP
-        );
-        char enc[640];
-        url_encode(json_in, enc, (int)sizeof(enc));
-        char path_utf8[900];
-        snprintf(
-            path_utf8,
-            sizeof(path_utf8),
-            "/IPlayerService/GetOwnedGames/v0001/?key=%s&format=json&input_json=%s",
-            key,
-            enc
-        );
-        wchar_t path[900];
-        MultiByteToWideChar(CP_UTF8, 0, path_utf8, -1, path, 900);
-        char json[8192];
-        json[0] = '\0';
+    if (g_key[0] && steamid && steamid[0]) {
+        static char json[65536];
         DWORD status = 0;
-        int ok = http_exchange(
-            L"api.steampowered.com",
-            INTERNET_DEFAULT_HTTPS_PORT,
-            L"GET",
-            path,
-            NULL,
-            0,
-            NULL,
-            json,
-            (int)sizeof(json),
-            NULL,
-            &status
-        );
-        SecureZeroMemory(path_utf8, sizeof(path_utf8));
-        SecureZeroMemory(path, sizeof(path));
+        int ok = steam_owned_games(steamid, json, (int)sizeof(json), &status);
         debug_log("steam: owned http %lu ok=%d bytes=%d", status, ok, (int)strlen(json));
         if (ok) {
-            steam_games = strstr(json, "\"games\"") != NULL || strstr(json, "game_count") != NULL;
-            if (steam_games) {
-                steam_d2 = json_has_appid(json, D2_APP);
-                steam_forsaken = json_has_appid(json, D2_FORSAKEN);
-                steam_shadowkeep = json_has_appid(json, D2_SHADOWKEEP);
+            steam_visible = strstr(json, "\"games\"") != NULL ||
+                strstr(json, "\"game_count\"") != NULL;
+            if (steam_visible) {
+                if (json_has_appid(json, D2_APP)) {
+                    g_owns_d2 = 1;
+                }
+                if (json_has_any_appid(json, k_forsaken, 3)) {
+                    mark_owned(&g_owns_forsaken);
+                }
+                if (json_has_any_appid(json, k_shadowkeep, 3)) {
+                    mark_owned(&g_owns_shadowkeep);
+                }
+                debug_log(
+                    "steam: library visible d2=%d forsaken=%d shadowkeep=%d",
+                    g_owns_d2,
+                    g_owns_forsaken,
+                    g_owns_shadowkeep
+                );
             } else {
-                debug_log("steam: game details hidden or empty");
+                debug_log("steam: game details hidden from Web API");
             }
-        }
-    }
-    SecureZeroMemory(key, sizeof(key));
-
-    if (steam_games) {
-        g_owns_known = 1;
-        g_owns_d2 = steam_d2 ? 1 : 0;
-        if (steam_forsaken) {
-            g_owns_forsaken = 1;
-        }
-        if (steam_shadowkeep) {
-            g_owns_shadowkeep = 1;
         }
     }
 
     if (g_bungie_key[0] && steamid && steamid[0]) {
         long versions = 0;
         if (fetch_bungie_versions(steamid, &versions)) {
-            g_owns_known = 1;
+            bungie_ok = 1;
             if ((versions & D2_VERSION_FORSAKEN) != 0 || (versions & D2_VERSION_Y2_PASS) != 0) {
-                g_owns_forsaken = 1;
+                mark_owned(&g_owns_forsaken);
             } else if (g_owns_forsaken != 1) {
                 g_owns_forsaken = 0;
             }
             if ((versions & D2_VERSION_SHADOWKEEP) != 0) {
-                g_owns_shadowkeep = 1;
+                mark_owned(&g_owns_shadowkeep);
             } else if (g_owns_shadowkeep != 1) {
                 g_owns_shadowkeep = 0;
             }
@@ -1767,6 +1975,33 @@ fetch_owned(const char *steamid)
         }
     } else if (g_owns_forsaken < 0 || g_owns_shadowkeep < 0) {
         debug_log("bungie: add BUNGIE_API_KEY to .env to verify DLC");
+    }
+
+    if (steamid && steamid[0] && (g_owns_forsaken < 0 || g_owns_shadowkeep < 0)) {
+        if (g_owns_forsaken < 0 && local_owns_any(steamid, k_forsaken, 3)) {
+            mark_owned(&g_owns_forsaken);
+        }
+        if (g_owns_shadowkeep < 0 && local_owns_any(steamid, k_shadowkeep, 3)) {
+            mark_owned(&g_owns_shadowkeep);
+        }
+        if (g_owns_d2 < 0 && local_owns_app(steamid, D2_APP)) {
+            g_owns_d2 = 1;
+        }
+        debug_log(
+            "steam: local licenses d2=%d forsaken=%d shadowkeep=%d",
+            g_owns_d2,
+            g_owns_forsaken,
+            g_owns_shadowkeep
+        );
+    }
+
+    g_owns_known = (g_owns_forsaken >= 0 && g_owns_shadowkeep >= 0);
+    if (!g_owns_known) {
+        debug_log(
+            "steam: DLC unknown visible=%d bungie=%d (Web API cannot list DLC)",
+            steam_visible,
+            bungie_ok
+        );
     }
     debug_log("steam: d2=%d forsaken=%d shadowkeep=%d", g_owns_d2, g_owns_forsaken, g_owns_shadowkeep);
 }
@@ -2652,4 +2887,33 @@ steam_auth_owns_shadowkeep(void)
         return -1;
     }
     return g_owns_shadowkeep > 0 ? 1 : 0;
+}
+
+const char *
+steam_auth_play_block(void)
+{
+    int forsaken;
+    int shadowkeep;
+
+    if (!steam_auth_signed_in()) {
+        return "Sign in first";
+    }
+    if (g_phase == STEAM_WORKING || g_phase == STEAM_WAITING) {
+        return "Checking licenses";
+    }
+    forsaken = steam_auth_owns_forsaken();
+    shadowkeep = steam_auth_owns_shadowkeep();
+    if (forsaken == 1 && shadowkeep == 1) {
+        return NULL;
+    }
+    if (forsaken < 0 || shadowkeep < 0) {
+        return "Can't verify Forsaken and Shadowkeep";
+    }
+    if (forsaken != 1 && shadowkeep != 1) {
+        return "Need Forsaken and Shadowkeep";
+    }
+    if (forsaken != 1) {
+        return "Need Forsaken";
+    }
+    return "Need Shadowkeep";
 }

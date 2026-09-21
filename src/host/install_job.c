@@ -113,6 +113,17 @@ static int g_verify;
 static uint32_t g_scan_check;
 static char g_dawn_zip_url[1024];
 static char g_dawn_tag[64];
+static char g_dawn_installed[64];
+static char g_dawn_latest[64];
+static char g_dawn_latest_json[MAX_PATH];
+static uint32_t g_dawn_latest_ms;
+static int g_dawn_installed_dirty;
+static int g_dawn_ver_pending;
+#ifdef _WIN32
+static HANDLE g_dawn_ver_proc;
+#else
+static pid_t g_dawn_ver_proc;
+#endif
 static int g_busy;
 static float g_depot_progress;
 static int g_installed;
@@ -1399,6 +1410,7 @@ remove_steam_appid(const char *dir)
 }
 
 static void write_launch_scripts(const char *dir);
+static int require_licenses(void);
 
 static int
 launch_game_tracked(void)
@@ -1406,6 +1418,9 @@ launch_game_tracked(void)
     char root[MAX_PATH];
     char exe[MAX_PATH];
 
+    if (!require_licenses()) {
+        return 0;
+    }
     if (!g_dir[0] && !(g_exe[0] && file_exists(g_exe))) {
         return 0;
     }
@@ -2703,8 +2718,6 @@ cmd_on_path(const char *name)
 static int
 format_tool_cmd(char *out, size_t max)
 {
-    size_t n;
-
     if (!out || max < 8 || !g_tool[0]) {
         return 0;
     }
@@ -2712,7 +2725,7 @@ format_tool_cmd(char *out, size_t max)
     snprintf(out, max, "\"%s\"", g_tool);
     return 1;
 #else
-    n = strlen(g_tool);
+    size_t n = strlen(g_tool);
     if (n > 4 && os_stricmp(g_tool + n - 4, ".exe") == 0) {
         char dir[MAX_PATH];
         char dll[MAX_PATH];
@@ -3329,11 +3342,29 @@ maybe_prepare_session(void)
 }
 
 static int
+require_licenses(void)
+{
+    const char *block = steam_auth_play_block();
+
+    if (block) {
+        set_status(block);
+        return 0;
+    }
+    return 1;
+}
+
+static int
 start_depot(void)
 {
     char command[2048];
     char work[MAX_PATH];
 
+    if (!require_licenses()) {
+        g_phase = INSTALL_FAILED;
+        g_busy = 0;
+        g_launch_after = 0;
+        return 0;
+    }
     g_session_job = 0;
     g_step = STEP_DEPOT_CONTENT;
     bind_steam_identity();
@@ -3838,6 +3869,240 @@ json_find_dawn_zip(const char *path, char *url, size_t url_max, char *tag, size_
     return url && url[0] != '\0';
 }
 
+static void
+plain_dawn_tag(char *text)
+{
+    if (text && (text[0] == 'v' || text[0] == 'V') && text[1]) {
+        memmove(text, text + 1, strlen(text));
+    }
+}
+
+static void
+set_dawn_latest_tag(const char *tag)
+{
+    if (!tag || !tag[0]) {
+        return;
+    }
+    snprintf(g_dawn_latest, sizeof(g_dawn_latest), "%s", tag);
+    plain_dawn_tag(g_dawn_latest);
+}
+
+static int
+file_json_string(const char *path, const char *key, char *out, int max)
+{
+    FILE *file;
+    char buf[4096];
+    char needle[80];
+    size_t n;
+    const char *p;
+
+    if (!path || !key || !out || max < 2) {
+        return 0;
+    }
+    file = fopen(path, "rb");
+    if (!file) {
+        return 0;
+    }
+    n = fread(buf, 1, sizeof(buf) - 1, file);
+    fclose(file);
+    buf[n] = '\0';
+    snprintf(needle, sizeof(needle), "\"%s\"", key);
+    p = strstr(buf, needle);
+    if (!p) {
+        return 0;
+    }
+    p += strlen(needle);
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
+        p++;
+    }
+    if (*p != ':') {
+        return 0;
+    }
+    p++;
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    if (*p != '"') {
+        return 0;
+    }
+    p++;
+    n = 0;
+    while (*p && *p != '"' && n + 1 < (size_t)max) {
+        out[n++] = *p++;
+    }
+    out[n] = '\0';
+    return n > 0;
+}
+
+static void
+mark_dawn_installed_dirty(void)
+{
+    g_dawn_installed_dirty = 1;
+}
+
+static void
+refresh_dawn_installed(void)
+{
+    char path[MAX_PATH];
+    char tag[64];
+
+    g_dawn_installed[0] = '\0';
+    tag[0] = '\0';
+    if (g_dir[0] &&
+        os_join(path, sizeof(path), g_dir, ".dawn") &&
+        os_join(path, sizeof(path), path, "release.json")) {
+        file_json_string(path, "release", tag, (int)sizeof(tag));
+    }
+    if (!tag[0] && g_dir[0] && os_join(path, sizeof(path), g_dir, "release.json")) {
+        file_json_string(path, "release", tag, (int)sizeof(tag));
+    }
+    if (tag[0] && strcmp(tag, "latest") != 0) {
+        snprintf(g_dawn_installed, sizeof(g_dawn_installed), "%s", tag);
+        plain_dawn_tag(g_dawn_installed);
+    }
+    g_dawn_installed_dirty = 0;
+}
+
+static void
+close_dawn_ver_proc(void)
+{
+#ifdef _WIN32
+    if (g_dawn_ver_proc) {
+        CloseHandle(g_dawn_ver_proc);
+        g_dawn_ver_proc = NULL;
+    }
+#else
+    g_dawn_ver_proc = 0;
+#endif
+}
+
+static int
+dawn_ver_proc_running(void)
+{
+#ifdef _WIN32
+    if (!g_dawn_ver_proc) {
+        return 0;
+    }
+    if (WaitForSingleObject(g_dawn_ver_proc, 0) == WAIT_TIMEOUT) {
+        return 1;
+    }
+    close_dawn_ver_proc();
+    return 0;
+#else
+    int st = 0;
+    if (g_dawn_ver_proc <= 0) {
+        return 0;
+    }
+    if (waitpid(g_dawn_ver_proc, &st, WNOHANG) == 0) {
+        return 1;
+    }
+    g_dawn_ver_proc = 0;
+    return 0;
+#endif
+}
+
+static void
+finish_dawn_latest_check(void)
+{
+    char tag[64];
+
+    tag[0] = '\0';
+    if (!g_dawn_latest_json[0]) {
+        return;
+    }
+    if (file_json_string(g_dawn_latest_json, "tag_name", tag, (int)sizeof(tag))) {
+        set_dawn_latest_tag(tag);
+    }
+}
+
+static void
+begin_dawn_latest_check(void)
+{
+    char curl[MAX_PATH];
+    char command[2048];
+#ifdef _WIN32
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    char runnable[2048];
+#endif
+
+    if (!g_dawn_latest_json[0] || dawn_ver_proc_running()) {
+        return;
+    }
+    find_curl(curl, sizeof(curl));
+    snprintf(
+        command,
+        sizeof(command),
+        "\"%s\" -fsSL --http1.1 --connect-timeout 15 --max-time 25 -A DawnLauncher -o \"%s\" \"%s\"",
+        curl,
+        g_dawn_latest_json,
+        DAWN_RELEASES_API
+    );
+#ifdef _WIN32
+    memset(&si, 0, sizeof(si));
+    memset(&pi, 0, sizeof(pi));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    snprintf(runnable, sizeof(runnable), "%s", command);
+    if (!CreateProcessA(
+            NULL,
+            runnable,
+            NULL,
+            NULL,
+            FALSE,
+            CREATE_NO_WINDOW,
+            NULL,
+            NULL,
+            &si,
+            &pi
+        )) {
+        return;
+    }
+    CloseHandle(pi.hThread);
+    g_dawn_ver_proc = pi.hProcess;
+#else
+    {
+        pid_t pid = fork();
+        if (pid < 0) {
+            return;
+        }
+        if (pid == 0) {
+            execl("/bin/sh", "sh", "-c", command, (char *)NULL);
+            _exit(127);
+        }
+        g_dawn_ver_proc = pid;
+    }
+#endif
+    g_dawn_ver_pending = 1;
+}
+
+static void
+poll_dawn_release_version(void)
+{
+    uint32_t now = os_tick_ms();
+
+    if (g_dawn_installed_dirty) {
+        refresh_dawn_installed();
+    }
+    if (dawn_ver_proc_running()) {
+        return;
+    }
+    if (g_dawn_ver_pending) {
+        g_dawn_ver_pending = 0;
+        finish_dawn_latest_check();
+        return;
+    }
+    if (g_dawn_latest_ms && (now - g_dawn_latest_ms) < 1800000u) {
+        return;
+    }
+    if (g_dawn_latest_ms == 0 && now < 1200u) {
+        return;
+    }
+    g_dawn_latest_ms = now ? now : 1;
+    begin_dawn_latest_check();
+}
+
 static int
 html_find_dawn_zip(const char *path, char *url, size_t url_max, char *tag, size_t tag_max)
 {
@@ -3924,16 +4189,19 @@ fetch_dawn_from_github(void)
     if (os_join(meta, sizeof(meta), work, "dawn-latest.json") &&
         curl_to_file(DAWN_RELEASES_API, meta, work) &&
         json_find_dawn_zip(meta, g_dawn_zip_url, sizeof(g_dawn_zip_url), g_dawn_tag, sizeof(g_dawn_tag))) {
+        set_dawn_latest_tag(g_dawn_tag);
         return 1;
     }
     if (os_join(meta, sizeof(meta), work, "dawn-latest.html") &&
         curl_to_file(DAWN_RELEASES_LATEST_HTML, meta, work) &&
         html_find_dawn_zip(meta, g_dawn_zip_url, sizeof(g_dawn_zip_url), g_dawn_tag, sizeof(g_dawn_tag))) {
+        set_dawn_latest_tag(g_dawn_tag);
         return 1;
     }
     if (os_join(meta, sizeof(meta), work, "dawn-releases.html") &&
         curl_to_file(DAWN_RELEASES_HTML, meta, work) &&
         html_find_dawn_zip(meta, g_dawn_zip_url, sizeof(g_dawn_zip_url), g_dawn_tag, sizeof(g_dawn_tag))) {
+        set_dawn_latest_tag(g_dawn_tag);
         return 1;
     }
     return 0;
@@ -4345,6 +4613,7 @@ write_dawn_receipt(const char *dir, const char *payload)
             }
         }
     }
+    mark_dawn_installed_dirty();
     return 1;
 }
 
@@ -4746,7 +5015,29 @@ install_job_init(const char *project_root)
     }
     g_dawn_zip_url[0] = '\0';
     g_dawn_tag[0] = '\0';
+    g_dawn_installed[0] = '\0';
+    g_dawn_latest[0] = '\0';
+    g_dawn_latest_json[0] = '\0';
+    g_dawn_latest_ms = 0;
+    g_dawn_installed_dirty = 1;
+    g_dawn_ver_pending = 0;
+#ifdef _WIN32
+    g_dawn_ver_proc = NULL;
+#else
+    g_dawn_ver_proc = 0;
+#endif
+    {
+        char dawn[MAX_PATH];
+        char cache[MAX_PATH];
+        os_data_dir(dawn, sizeof(dawn));
+        if (os_join(cache, sizeof(cache), dawn, "cache")) {
+            os_mkdirs(cache);
+            os_join(g_dawn_latest_json, sizeof(g_dawn_latest_json), cache, "dawn-latest.json");
+        }
+    }
+    finish_dawn_latest_check();
     load_install_dir();
+    refresh_dawn_installed();
     if (dawn_ready(g_dir)) {
         set_status("Dawn is ready");
     } else if (g_installed) {
@@ -4759,6 +5050,17 @@ install_job_init(const char *project_root)
 void
 install_job_shutdown(void)
 {
+#ifdef _WIN32
+    if (g_dawn_ver_proc) {
+        TerminateProcess(g_dawn_ver_proc, 1);
+        close_dawn_ver_proc();
+    }
+#else
+    if (g_dawn_ver_proc > 0) {
+        kill(g_dawn_ver_proc, SIGTERM);
+        close_dawn_ver_proc();
+    }
+#endif
     install_job_cancel();
     forget_depot_password();
 }
@@ -4834,6 +5136,7 @@ install_job_set_dir(const char *dir)
     persist_dir();
     persist_exe();
     invalidate_install_ready();
+    mark_dawn_installed_dirty();
     if (is_live_latest_d2(g_dir) && !dawn_depots_present(g_dir)) {
         set_status("Live D2 folder, not 86657");
         return;
@@ -4946,44 +5249,7 @@ install_job_submit_secret(const char *text)
     }
 }
 
-static int
-is_dev_host(void)
-{
-    char path[MAX_PATH];
-    const char *base;
-
-    if (APP_VERSION && strstr(APP_VERSION, "dev")) {
-        return 1;
-    }
-#ifdef _WIN32
-    if (GetModuleFileNameA(NULL, path, MAX_PATH)) {
-        int i;
-        base = path;
-        for (i = 0; path[i]; i++) {
-            if (path[i] == '\\' || path[i] == '/') {
-                base = path + i + 1;
-            }
-        }
-        if (os_stricmp(base, "host.exe") == 0) {
-            return 1;
-        }
-    }
-#else
-    {
-        ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 1);
-        if (n > 0) {
-            path[n] = '\0';
-            base = strrchr(path, '/');
-            base = base ? base + 1 : path;
-            if (os_stricmp(base, "host") == 0) {
-                return 1;
-            }
-        }
-    }
-#endif
-    return 0;
-}
-
+#if APP_DEV
 static void
 start_sim(void)
 {
@@ -5035,15 +5301,23 @@ poll_sim(void)
         set_status("Downloading game");
     }
 }
+#endif
 
 int
 install_job_start(void)
 {
     if (g_paused) {
+        if (!require_licenses()) {
+            return 0;
+        }
         install_job_pause();
         return 1;
     }
     if (g_busy) {
+        return 0;
+    }
+    if (!require_licenses()) {
+        g_phase = INSTALL_FAILED;
         return 0;
     }
     g_user_start = 1;
@@ -5081,11 +5355,6 @@ install_job_start(void)
         }
         if (content_depot_present(g_dir)) {
             set_status("Using cached game files");
-            if (!steam_auth_signed_in()) {
-                set_status("Sign in first");
-                g_phase = INSTALL_FAILED;
-                return 0;
-            }
             if (start_missing_language(0)) {
                 return 1;
             }
@@ -5093,11 +5362,6 @@ install_job_start(void)
             g_phase = INSTALL_FAILED;
             return 0;
         }
-    }
-    if (!steam_auth_signed_in()) {
-        set_status("Sign in first");
-        g_phase = INSTALL_FAILED;
-        return 0;
     }
     if (steam_auth_owns_d2() == 0) {
         set_status("No Destiny 2 license");
@@ -5224,34 +5488,43 @@ install_job_pause(void)
 int
 install_job_can_simulate(void)
 {
-    if (!is_dev_host()) {
+#if !APP_DEV
+    return 0;
+#else
+    if (steam_auth_play_block()) {
         return 0;
     }
     if (g_busy || g_paused || g_dawn_next != DAWN_WORK_NONE || g_remove_next) {
         return 0;
     }
     return 1;
+#endif
 }
 
 void
 install_job_simulate(void)
 {
+#if APP_DEV
     if (!install_job_can_simulate()) {
         return;
     }
     close_child();
     start_sim();
+#endif
 }
 
 void
 install_job_poll(void)
 {
+    poll_dawn_release_version();
     poll_game();
     expire_hold_status();
+#if APP_DEV
     if (g_sim) {
         poll_sim();
         return;
     }
+#endif
     if (g_remove_next) {
         apply_remove();
         return;
@@ -5450,6 +5723,12 @@ int
 install_job_launch(void)
 {
     char exe[MAX_PATH];
+    const char *block = steam_auth_play_block();
+
+    if (block) {
+        set_status(block);
+        return 0;
+    }
 
     repair_vc_runtimes(g_dir);
     remove_steam_appid(g_dir);
@@ -5525,6 +5804,18 @@ const char *
 install_job_language_label(void)
 {
     return game_language()->label;
+}
+
+const char *
+install_job_dawn_version(void)
+{
+    return g_dawn_installed;
+}
+
+const char *
+install_job_dawn_latest(void)
+{
+    return g_dawn_latest;
 }
 
 static void
@@ -5863,6 +6154,7 @@ uninstall_dawn_only(const char *dir)
     wipe_child(dir, "launch-destiny.sh");
     wipe_child(dir, "release.json");
     wipe_child(dir, ".dawn");
+    mark_dawn_installed_dirty();
     return 1;
 }
 
@@ -6048,11 +6340,10 @@ install_job_verify(void)
         set_status("DepotDownloader missing");
         return 0;
     }
-    bind_steam_identity();
-    if (!steam_auth_signed_in()) {
-        set_status("Sign in first");
+    if (!require_licenses()) {
         return 0;
     }
+    bind_steam_identity();
     if (g_user[0] == '\0') {
         set_status("No Steam username");
         return 0;

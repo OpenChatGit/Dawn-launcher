@@ -1,6 +1,7 @@
 #include "settings_modal.h"
 #include "login_modal.h"
 #include "modal_skin.h"
+#include "i18n/i18n.h"
 #include "shared/chrome.h"
 #include "shared/icons.h"
 #include "shared/os.h"
@@ -61,6 +62,14 @@ typedef struct SettingsLayout {
     float exe_browse_y;
     float exe_browse_w;
     float exe_browse_h;
+    float app_lang_x;
+    float app_lang_y;
+    float app_lang_w;
+    float app_lang_h;
+    float app_menu_x;
+    float app_menu_y;
+    float app_menu_w;
+    float app_menu_h;
     float lang_x;
     float lang_y;
     float lang_w;
@@ -97,6 +106,7 @@ static int g_open;
 static int g_block_mouse;
 static int g_arm_download;
 static int g_page;
+static int g_ui_lang_open;
 static int g_lang_open;
 static int g_lang_scroll;
 static int g_lang_drag;
@@ -106,6 +116,7 @@ static float g_anim;
 static float g_hover_close;
 static float g_hover_browse;
 static float g_hover_exe;
+static float g_hover_ui_lang;
 static float g_hover_lang;
 static float g_hover_ok;
 static float g_hover_item;
@@ -131,26 +142,26 @@ static const char *k_lang_steam[] = {
     "koreana"
 };
 
-static const wchar_t *k_lang_label[] = {
-    L"English",
-    L"French",
-    L"German",
-    L"Italian",
-    L"Japanese",
-    L"Portuguese (Brazil)",
-    L"Spanish",
-    L"Russian",
-    L"Polish",
-    L"Chinese (Simplified)",
-    L"Chinese (Traditional)",
-    L"Spanish (Latam)",
-    L"Korean"
+static const I18nId k_lang_i18n[] = {
+    I18N_STEAM_ENGLISH,
+    I18N_STEAM_FRENCH,
+    I18N_STEAM_GERMAN,
+    I18N_STEAM_ITALIAN,
+    I18N_STEAM_JAPANESE,
+    I18N_STEAM_BRAZILIAN,
+    I18N_STEAM_SPANISH,
+    I18N_STEAM_RUSSIAN,
+    I18N_STEAM_POLISH,
+    I18N_STEAM_SCHINESE,
+    I18N_STEAM_TCHINESE,
+    I18N_STEAM_LATAM,
+    I18N_STEAM_KOREAN
 };
 
-static const wchar_t *k_page_label[] = {
-    L"User",
-    L"General",
-    L"Installation"
+static const I18nId k_page_i18n[] = {
+    I18N_USER,
+    I18N_GENERAL,
+    I18N_INSTALLATION
 };
 
 static const IconId k_page_icon[] = {
@@ -175,7 +186,7 @@ layout_modal(Platform *platform, SettingsLayout *out)
     out->overlay_w = (float)platform->width;
     out->overlay_h = (float)platform->height;
     out->w = (float)modal_px(560, s);
-    out->h = (float)modal_px(428, s);
+    out->h = (float)modal_px(500, s);
     if (out->w > (float)platform->width - 32.0f) {
         out->w = (float)platform->width - 32.0f;
     }
@@ -215,12 +226,14 @@ layout_modal(Platform *platform, SettingsLayout *out)
     if (platform->hdc) {
         static float browse_cache_px;
         static float browse_cache_w;
-        if (browse_cache_w > 0.0f && browse_cache_px == browse_px) {
+        static int browse_cache_lang = -1;
+        if (browse_cache_w > 0.0f && browse_cache_px == browse_px && browse_cache_lang == (int)i18n_lang()) {
             tw = browse_cache_w;
         } else {
-            tw = icon_measure_label(platform->hdc, L"Browse", browse_px, 600);
+            tw = icon_measure_label(platform->hdc, i18n_t(I18N_BROWSE), browse_px, 600);
             browse_cache_px = browse_px;
             browse_cache_w = tw;
+            browse_cache_lang = (int)i18n_lang();
         }
     }
     out->browse_h = out->path_h - inner * 2.0f;
@@ -242,11 +255,20 @@ layout_modal(Platform *platform, SettingsLayout *out)
     out->exe_browse_x = out->path_x + out->path_w - inner - out->exe_browse_w;
     out->exe_browse_y = out->exe_y + (out->exe_h - out->exe_browse_h) * 0.5f;
 
+    out->item_h = (float)modal_px(26, s);
+    out->app_lang_x = out->content_x;
+    out->app_lang_y = out->content_y + (float)modal_px(22, s);
+    out->app_lang_w = out->content_w;
+    out->app_lang_h = out->path_h;
+    out->app_menu_w = out->app_lang_w;
+    out->app_menu_h = out->item_h * 2.0f + (float)modal_px(10, s);
+    out->app_menu_x = out->app_lang_x;
+    out->app_menu_y = out->app_lang_y + out->app_lang_h + (float)modal_px(4, s);
     out->lang_x = out->content_x;
-    out->lang_y = out->content_y + (float)modal_px(36, s);
+    out->lang_y = out->app_lang_y + out->app_lang_h +
+        (g_ui_lang_open ? out->app_menu_h + (float)modal_px(36, s) : (float)modal_px(56, s));
     out->lang_w = out->content_w;
     out->lang_h = out->path_h;
-    out->item_h = (float)modal_px(26, s);
     out->menu_w = out->lang_w;
     out->menu_h = out->item_h * (float)LANG_VISIBLE + (float)modal_px(10, s);
     out->menu_x = out->lang_x;
@@ -297,7 +319,7 @@ layout_modal(Platform *platform, SettingsLayout *out)
     out->avatar_y = out->content_y + (float)modal_px(8, s);
     out->copy_h = (float)modal_px(28, s);
     if (platform->hdc) {
-        tw = icon_measure_label(platform->hdc, L"Copy ID", (float)modal_px(12, s), 600);
+        tw = icon_measure_label(platform->hdc, i18n_t(I18N_COPY_ID), (float)modal_px(12, s), 600);
     } else {
         tw = 48.0f;
     }
@@ -335,7 +357,8 @@ path_label(const char *utf8, wchar_t *out, int max)
     }
     out[0] = 0;
     if (!utf8 || !utf8[0]) {
-        wcscpy(out, L"Not set");
+        wcsncpy(out, i18n_t(I18N_NOT_SET), (size_t)max - 1);
+        out[max - 1] = 0;
         return;
     }
     os_utf8_to_wide(utf8, wide, 512);
@@ -494,7 +517,7 @@ draw_path_row(
     uint32_t field = modal_field_color();
     uint32_t chip = modal_mix(field, 0xffffff, 18 + (int)(hover_browse * 36.0f));
     uint32_t stroke = hover_browse > 0.2f ? chrome->hover : chrome->muted;
-    uint32_t fg = (path && path[0] && wcscmp(path, L"Not set") != 0) ? chrome->title_color : chrome->muted;
+    uint32_t fg = (path && path[0] && wcscmp(path, i18n_t(I18N_NOT_SET)) != 0) ? chrome->title_color : chrome->muted;
     uint32_t chip_fg = busy ? chrome->muted : (hover_browse > 0.2f ? chrome->hover : chrome->title_color);
 
     icon_round_rect(platform->hdc, x, y, w, h, radius, field, alpha);
@@ -541,7 +564,7 @@ draw_path_row(
         by,
         bw,
         bh,
-        L"Browse",
+        i18n_t(I18N_BROWSE),
         chip_fg,
         (float)modal_px(12, scale),
         600,
@@ -557,7 +580,7 @@ current_lang_label(Platform *platform)
 
     for (i = 0; i < LANG_OPTION_COUNT; i++) {
         if (steam && os_stricmp(steam, k_lang_steam[i]) == 0) {
-            return k_lang_label[i];
+            return i18n_t(k_lang_i18n[i]);
         }
     }
     if (platform->install_language_label) {
@@ -567,7 +590,7 @@ current_lang_label(Platform *platform)
             return wide;
         }
     }
-    return L"English";
+    return i18n_t(I18N_STEAM_ENGLISH);
 }
 
 static int
@@ -656,9 +679,12 @@ lang_item_at(const SettingsLayout *L, int mx, int my)
 }
 
 static void
-draw_lang_field(
+draw_select_field(
     Platform *platform,
-    const SettingsLayout *L,
+    float x,
+    float y,
+    float w,
+    float h,
     const wchar_t *label,
     float hover,
     int open,
@@ -668,7 +694,7 @@ draw_lang_field(
 )
 {
     const ThemeChrome *chrome = theme_chrome();
-    float radius = L->lang_h * 0.28f;
+    float radius = h * 0.28f;
     float pad = (float)modal_px(12, scale);
     float px = (float)modal_px(13, scale);
     int alpha = (int)(anim * 255.0f);
@@ -677,13 +703,13 @@ draw_lang_field(
     uint32_t fg = busy ? chrome->muted : chrome->title_color;
     float chev = (float)modal_px(16, scale);
 
-    icon_round_rect(platform->hdc, L->lang_x, L->lang_y, L->lang_w, L->lang_h, radius, field, alpha);
+    icon_round_rect(platform->hdc, x, y, w, h, radius, field, alpha);
     icon_round_stroke(
         platform->hdc,
-        L->lang_x,
-        L->lang_y,
-        L->lang_w,
-        L->lang_h,
+        x,
+        y,
+        w,
+        h,
         radius,
         stroke,
         (int)(anim * ((hover > 0.2f || open) ? 70.0f : 28.0f)),
@@ -691,10 +717,10 @@ draw_lang_field(
     );
     icon_draw_label_alpha(
         platform->hdc,
-        L->lang_x + pad,
-        L->lang_y,
-        L->lang_w - pad * 2.0f - chev,
-        L->lang_h,
+        x + pad,
+        y,
+        w - pad * 2.0f - chev,
+        h,
         label,
         fg,
         px,
@@ -704,12 +730,73 @@ draw_lang_field(
     icon_draw(
         platform->hdc,
         open ? ICON_CHEVRON_UP : ICON_CHEVRON_DOWN,
-        L->lang_x + L->lang_w - pad - chev * 0.5f,
-        L->lang_y + L->lang_h * 0.5f,
+        x + w - pad - chev * 0.5f,
+        y + h * 0.5f,
         chev,
         fg,
         0.0f
     );
+}
+
+static void
+draw_app_lang_menu(Platform *platform, const SettingsLayout *L, int over, float anim, float scale)
+{
+    const ThemeChrome *chrome = theme_chrome();
+    const I18nId ids[2] = { I18N_UI_EN, I18N_UI_DE };
+    float y = L->app_menu_y + 5.0f;
+    float inset = (float)modal_px(10, scale);
+    int i;
+    int alpha = modal_alpha_local(anim);
+    float radius = (float)modal_px(10, scale);
+    int selected = i18n_lang() == I18N_DE ? 1 : 0;
+
+    icon_round_rect(platform->hdc, L->app_menu_x, L->app_menu_y + 2.0f, L->app_menu_w, L->app_menu_h, radius, 0x000000, alpha * 40 / 255);
+    icon_round_rect(platform->hdc, L->app_menu_x, L->app_menu_y, L->app_menu_w, L->app_menu_h, radius, modal_panel_color(), alpha);
+    icon_round_stroke(platform->hdc, L->app_menu_x, L->app_menu_y, L->app_menu_w, L->app_menu_h, radius, chrome->muted, alpha * 28 / 255, 1.0f);
+    for (i = 0; i < 2; i++) {
+        uint32_t fg = (i == selected) ? chrome->title_color : chrome->muted;
+        if (i == over) {
+            icon_round_rect(
+                platform->hdc,
+                L->app_menu_x + 4.0f,
+                y,
+                L->app_menu_w - 8.0f,
+                L->item_h,
+                6.0f,
+                modal_mix(modal_field_color(), 0xffffff, 22),
+                alpha
+            );
+            fg = chrome->title_color;
+        }
+        icon_draw_label_alpha(
+            platform->hdc,
+            L->app_menu_x + inset,
+            y,
+            L->app_menu_w - inset * 2.0f,
+            L->item_h,
+            i18n_t(ids[i]),
+            fg,
+            (float)modal_px(13, scale),
+            600,
+            alpha
+        );
+        y += L->item_h;
+    }
+}
+
+static int
+app_lang_item_at(const SettingsLayout *L, int mx, int my)
+{
+    int i;
+    float y = L->app_menu_y + 5.0f;
+
+    for (i = 0; i < 2; i++) {
+        if (modal_hit(mx, my, L->app_menu_x, y, L->app_menu_w, L->item_h)) {
+            return i;
+        }
+        y += L->item_h;
+    }
+    return -1;
 }
 
 static void
@@ -755,7 +842,7 @@ draw_lang_menu(Platform *platform, const SettingsLayout *L, int selected, int ov
             y,
             text_w,
             L->item_h,
-            k_lang_label[idx],
+            i18n_t(k_lang_i18n[idx]),
             fg,
             (float)modal_px(13, scale),
             idx == selected ? 600 : 600,
@@ -809,7 +896,7 @@ draw_ok_pill(
         L->ok_y,
         L->ok_w,
         L->ok_h,
-        L"OK",
+        i18n_t(I18N_OK),
         fg,
         (float)modal_px(13, scale),
         600,
@@ -878,7 +965,7 @@ draw_sidebar(Platform *platform, const SettingsLayout *L, float anim, float scal
         L->y + (float)modal_px(16, scale),
         L->nav_w,
         (float)modal_px(20, scale),
-        L"Settings",
+        i18n_t(I18N_SETTINGS),
         chrome->title_color,
         (float)modal_px(13, scale),
         600,
@@ -913,13 +1000,81 @@ draw_sidebar(Platform *platform, const SettingsLayout *L, float anim, float scal
             y,
             L->nav_x + L->nav_w - text_x - pad,
             L->nav_h,
-            k_page_label[i],
+            i18n_t(k_page_i18n[i]),
             fg,
             (float)modal_px(13, scale),
             600,
             alpha
         );
     }
+}
+
+static const wchar_t *
+dlc_state_label(int owned)
+{
+    if (owned == 1) {
+        return i18n_t(I18N_OWNED);
+    }
+    if (owned == 0) {
+        return i18n_t(I18N_MISSING);
+    }
+    return i18n_t(I18N_UNKNOWN);
+}
+
+static uint32_t
+dlc_state_color(int owned, const ThemeChrome *chrome)
+{
+    if (owned == 1) {
+        return 0x3ccf6e;
+    }
+    if (owned == 0) {
+        return 0xe81123;
+    }
+    return chrome->muted;
+}
+
+static void
+draw_dlc_row(
+    Platform *platform,
+    float x,
+    float y,
+    float w,
+    float h,
+    const wchar_t *name,
+    int owned,
+    float anim,
+    float scale
+)
+{
+    const ThemeChrome *chrome = theme_chrome();
+    int alpha = modal_alpha_local(anim);
+    uint32_t color = dlc_state_color(owned, chrome);
+    float status_w = (float)modal_px(72, scale);
+
+    icon_draw_label_alpha(
+        platform->hdc,
+        x,
+        y,
+        w - status_w - (float)modal_px(8, scale),
+        h,
+        name,
+        chrome->title_color,
+        (float)modal_px(12, scale),
+        600,
+        alpha
+    );
+    icon_draw_label_end_alpha(
+        platform->hdc,
+        x + w - status_w,
+        y,
+        status_w,
+        h,
+        dlc_state_label(owned),
+        color,
+        (float)modal_px(12, scale),
+        600,
+        alpha
+    );
 }
 
 static void
@@ -979,7 +1134,7 @@ draw_user_page(Platform *platform, const SettingsLayout *L, float anim, float sc
         L->avatar_y,
         text_w,
         L->avatar_s * 0.55f,
-        signed_in && name_w[0] ? name_w : L"Guest",
+        signed_in && name_w[0] ? name_w : i18n_t(I18N_GUEST),
         chrome->title_color,
         (float)modal_px(13, scale),
         600,
@@ -991,7 +1146,7 @@ draw_user_page(Platform *platform, const SettingsLayout *L, float anim, float sc
         L->avatar_y + L->avatar_s * 0.48f,
         text_w,
         L->avatar_s * 0.52f,
-        signed_in ? L"Signed in with Steam" : L"Not signed in",
+        signed_in ? i18n_t(I18N_SIGNED_IN_STEAM) : i18n_t(I18N_NOT_SIGNED_IN),
         chrome->muted,
         (float)modal_px(12, scale),
         600,
@@ -1015,12 +1170,106 @@ draw_user_page(Platform *platform, const SettingsLayout *L, float anim, float sc
         L->copy_y,
         L->copy_w,
         L->copy_h,
-        copied ? L"Copied" : L"Copy ID",
+        copied ? i18n_t(I18N_COPIED) : i18n_t(I18N_COPY_ID),
         fg,
         (float)modal_px(12, scale),
         600,
         alpha
     );
+    {
+        int forsaken = platform->steam_owns_forsaken ? platform->steam_owns_forsaken() : -1;
+        int shadowkeep = platform->steam_owns_shadowkeep ? platform->steam_owns_shadowkeep() : -1;
+        int busy = platform->steam_busy && platform->steam_busy();
+        float card_y = L->avatar_y + L->avatar_s + (float)modal_px(22, scale);
+        float label_h = (float)modal_px(18, scale);
+        float card_h = (float)modal_px(104, scale);
+        float row_h = (float)modal_px(26, scale);
+        float pad = (float)modal_px(12, scale);
+        float radius = (float)modal_px(10, scale);
+        float row_y;
+        const wchar_t *summary;
+
+        if (!signed_in) {
+            summary = i18n_t(I18N_DLC_SIGN_IN);
+            forsaken = -1;
+            shadowkeep = -1;
+        } else if (busy) {
+            summary = i18n_t(I18N_DLC_CHECKING);
+        } else if (forsaken == 1 && shadowkeep == 1) {
+            summary = i18n_t(I18N_DLC_ALL_OWNED);
+        } else if (forsaken == 0 || shadowkeep == 0) {
+            summary = i18n_t(I18N_DLC_MISSING);
+        } else {
+            summary = i18n_t(I18N_DLC_CANT_VERIFY);
+        }
+        draw_section_label(
+            platform,
+            L->content_x,
+            card_y,
+            L->content_w,
+            label_h,
+            i18n_t(I18N_DLC_OWNERSHIP),
+            scale,
+            anim
+        );
+        card_y += label_h + (float)modal_px(6, scale);
+        icon_round_rect(
+            platform->hdc,
+            L->content_x,
+            card_y,
+            L->content_w,
+            card_h,
+            radius,
+            modal_field_color(),
+            alpha
+        );
+        icon_round_stroke(
+            platform->hdc,
+            L->content_x,
+            card_y,
+            L->content_w,
+            card_h,
+            radius,
+            chrome->muted,
+            (int)(anim * 28.0f),
+            1.0f
+        );
+        icon_draw_label_alpha(
+            platform->hdc,
+            L->content_x + pad,
+            card_y + (float)modal_px(8, scale),
+            L->content_w - pad * 2.0f,
+            (float)modal_px(18, scale),
+            summary,
+            (forsaken == 1 && shadowkeep == 1) ? chrome->title_color : chrome->muted,
+            (float)modal_px(12, scale),
+            600,
+            alpha
+        );
+        row_y = card_y + (float)modal_px(32, scale);
+        draw_dlc_row(
+            platform,
+            L->content_x + pad,
+            row_y,
+            L->content_w - pad * 2.0f,
+            row_h,
+            L"Forsaken",
+            forsaken,
+            anim,
+            scale
+        );
+        draw_dlc_row(
+            platform,
+            L->content_x + pad,
+            row_y + row_h + (float)modal_px(4, scale),
+            L->content_w - pad * 2.0f,
+            row_h,
+            L"Shadowkeep",
+            shadowkeep,
+            anim,
+            scale
+        );
+    }
 }
 
 static void
@@ -1032,6 +1281,9 @@ confirm_ok(Platform *platform)
         return;
     }
     if (start && !has_dir(platform)) {
+        return;
+    }
+    if (start && platform->steam_license_block && platform->steam_license_block()) {
         return;
     }
     g_arm_download = 0;
@@ -1049,6 +1301,7 @@ settings_modal_open(void)
     g_block_mouse = 1;
     g_arm_download = 0;
     g_page = SETTINGS_PAGE_USER;
+    g_ui_lang_open = 0;
     g_lang_open = 0;
 }
 
@@ -1060,6 +1313,7 @@ settings_modal_open_for_download(void)
     g_block_mouse = 1;
     g_arm_download = 1;
     g_page = SETTINGS_PAGE_INSTALL;
+    g_ui_lang_open = 0;
     g_lang_open = 0;
 }
 
@@ -1070,6 +1324,7 @@ settings_modal_close(void)
     g_anim = 0.0f;
     g_block_mouse = 0;
     g_arm_download = 0;
+    g_ui_lang_open = 0;
     g_lang_open = 0;
     g_lang_drag = 0;
 }
@@ -1083,12 +1338,14 @@ settings_modal_hide(void)
     g_anim = 0.0f;
     g_block_mouse = 0;
     g_arm_download = 0;
+    g_ui_lang_open = 0;
     g_lang_open = 0;
     g_lang_scroll = 0;
     g_lang_drag = 0;
     g_hover_close = 0.0f;
     g_hover_browse = 0.0f;
     g_hover_exe = 0.0f;
+    g_hover_ui_lang = 0.0f;
     g_hover_lang = 0.0f;
     g_hover_ok = 0.0f;
     g_hover_copy = 0.0f;
@@ -1121,14 +1378,17 @@ settings_modal_tick(Platform *platform, float dt)
     int over_browse;
     int over_exe;
     int over_lang;
+    int over_ui_lang;
     int over_ok;
     int over_card;
     int over_menu;
+    int over_ui_menu;
     int over_copy;
     int over_nav;
     int busy;
     int can_ok;
     int item;
+    int app_item;
     int selected;
     int i;
     wchar_t path_w[96];
@@ -1149,14 +1409,19 @@ settings_modal_tick(Platform *platform, float dt)
     busy = is_busy(platform);
     can_ok = !busy && (!g_arm_download || has_dir(platform));
     item = (g_open && g_lang_open && g_page == SETTINGS_PAGE_GENERAL) ? lang_item_at(&L, mx, my) : -1;
+    app_item = (g_open && g_ui_lang_open && g_page == SETTINGS_PAGE_GENERAL) ? app_lang_item_at(&L, mx, my) : -1;
     over_nav = nav_at(&L, mx, my);
     over_close = modal_hit(mx, my, L.close_x, L.close_y, L.close_s, L.close_s);
     over_browse = !busy && g_page == SETTINGS_PAGE_INSTALL &&
         modal_hit(mx, my, L.path_x, L.path_y, L.path_w, L.path_h);
     over_exe = !busy && g_page == SETTINGS_PAGE_INSTALL &&
         modal_hit(mx, my, L.exe_x, L.exe_y, L.exe_w, L.exe_h);
+    over_ui_lang = g_page == SETTINGS_PAGE_GENERAL &&
+        modal_hit(mx, my, L.app_lang_x, L.app_lang_y, L.app_lang_w, L.app_lang_h);
     over_lang = !busy && g_page == SETTINGS_PAGE_GENERAL &&
         modal_hit(mx, my, L.lang_x, L.lang_y, L.lang_w, L.lang_h);
+    over_ui_menu = g_ui_lang_open && g_page == SETTINGS_PAGE_GENERAL &&
+        modal_hit(mx, my, L.app_menu_x, L.app_menu_y, L.app_menu_w, L.app_menu_h);
     over_menu = g_lang_open && g_page == SETTINGS_PAGE_GENERAL &&
         modal_hit(mx, my, L.menu_x, L.menu_y, L.menu_w, L.menu_h);
     over_copy = g_page == SETTINGS_PAGE_USER &&
@@ -1184,12 +1449,13 @@ settings_modal_tick(Platform *platform, float dt)
             }
         }
     }
-    over_ok = can_ok && !g_lang_open && g_page == SETTINGS_PAGE_INSTALL &&
+    over_ok = can_ok && !g_lang_open && !g_ui_lang_open && g_page == SETTINGS_PAGE_INSTALL &&
         modal_hit(mx, my, L.ok_x, L.ok_y, L.ok_w, L.ok_h);
-    over_card = modal_hit(mx, my, L.x, L.y, L.w, L.h) || over_menu;
+    over_card = modal_hit(mx, my, L.x, L.y, L.w, L.h) || over_menu || over_ui_menu;
     g_hover_close = modal_approach(g_hover_close, (g_open && over_close) ? 1.0f : 0.0f, dt);
     g_hover_browse = modal_approach(g_hover_browse, (g_open && over_browse) ? 1.0f : 0.0f, dt);
     g_hover_exe = modal_approach(g_hover_exe, (g_open && over_exe) ? 1.0f : 0.0f, dt);
+    g_hover_ui_lang = modal_approach(g_hover_ui_lang, (g_open && (over_ui_lang || g_ui_lang_open)) ? 1.0f : 0.0f, dt);
     g_hover_lang = modal_approach(g_hover_lang, (g_open && (over_lang || g_lang_open)) ? 1.0f : 0.0f, dt);
     g_hover_ok = modal_approach(g_hover_ok, (g_open && over_ok) ? 1.0f : 0.0f, dt);
     g_hover_copy = modal_approach(g_hover_copy, (g_open && over_copy) ? 1.0f : 0.0f, dt);
@@ -1208,7 +1474,7 @@ settings_modal_tick(Platform *platform, float dt)
         L.title_y,
         L.title_w,
         L.title_h,
-        k_page_label[g_page],
+        i18n_t(k_page_i18n[g_page]),
         theme_chrome()->title_color,
         (float)modal_px(15, s),
         600,
@@ -1225,12 +1491,62 @@ settings_modal_tick(Platform *platform, float dt)
             L.content_y,
             L.content_w,
             (float)modal_px(20, s),
-            L"Game language",
+            i18n_t(I18N_APP_LANGUAGE),
+            s,
+            g_anim
+        );
+        draw_select_field(
+            platform,
+            L.app_lang_x,
+            L.app_lang_y,
+            L.app_lang_w,
+            L.app_lang_h,
+            i18n_t(i18n_lang() == I18N_DE ? I18N_UI_DE : I18N_UI_EN),
+            g_hover_ui_lang,
+            g_ui_lang_open,
+            0,
+            g_anim,
+            s
+        );
+        if (g_ui_lang_open && g_anim > 0.02f) {
+            draw_app_lang_menu(platform, &L, app_item, g_anim, s);
+        }
+        icon_draw_label_alpha(
+            platform->hdc,
+            L.content_x,
+            L.app_lang_y + L.app_lang_h + (g_ui_lang_open ? L.app_menu_h + (float)modal_px(8, s) : (float)modal_px(8, s)),
+            L.content_w,
+            (float)modal_px(24, s),
+            i18n_t(I18N_APP_LANGUAGE_HINT),
+            theme_chrome()->muted,
+            (float)modal_px(12, s),
+            600,
+            modal_alpha_local(g_anim)
+        );
+        draw_section_label(
+            platform,
+            L.content_x,
+            L.lang_y - (float)modal_px(22, s),
+            L.content_w,
+            (float)modal_px(20, s),
+            i18n_t(I18N_GAME_LANGUAGE),
             s,
             g_anim
         );
         lang_w = current_lang_label(platform);
-        draw_lang_field(platform, &L, lang_w, g_hover_lang, g_lang_open, busy, g_anim, s);
+        draw_select_field(
+            platform,
+            L.lang_x,
+            L.lang_y,
+            L.lang_w,
+            L.lang_h,
+            lang_w,
+            g_hover_lang,
+            g_lang_open,
+            busy,
+            g_anim,
+            s
+        );
         selected = 0;
         {
             const char *cur = platform->install_language ? platform->install_language() : "";
@@ -1250,7 +1566,7 @@ settings_modal_tick(Platform *platform, float dt)
             L.lang_y + L.lang_h + (g_lang_open ? L.menu_h + (float)modal_px(10, s) : (float)modal_px(10, s)),
             L.content_w,
             (float)modal_px(32, s),
-            L"Used when Dawn downloads the language depot.",
+            i18n_t(I18N_GAME_LANGUAGE_HINT),
             theme_chrome()->muted,
             (float)modal_px(12, s),
             600,
@@ -1263,7 +1579,7 @@ settings_modal_tick(Platform *platform, float dt)
             L.content_y,
             L.content_w,
             (float)modal_px(20, s),
-            L"Install folder",
+            i18n_t(I18N_INSTALL_FOLDER),
             s,
             g_anim
         );
@@ -1299,7 +1615,7 @@ settings_modal_tick(Platform *platform, float dt)
                 L.path_y + L.path_h + (float)modal_px(10, s),
                 L.content_w,
                 (float)modal_px(20, s),
-                L"Game EXE",
+                i18n_t(I18N_GAME_EXE),
                 s,
                 g_anim
             );
@@ -1322,15 +1638,15 @@ settings_modal_tick(Platform *platform, float dt)
             );
         }
         if (busy) {
-            wcscpy(g_status_w, L"Folder is locked while downloading.");
+            wcscpy(g_status_w, i18n_t(I18N_STATUS_FOLDER_LOCKED));
         } else if (g_arm_download && !has_dir(platform)) {
-            wcscpy(g_status_w, L"Browse to a folder first.");
+            wcscpy(g_status_w, i18n_t(I18N_STATUS_BROWSE_FIRST));
         } else if (g_arm_download) {
-            wcscpy(g_status_w, L"OK starts the download here.");
+            wcscpy(g_status_w, i18n_t(I18N_STATUS_OK_STARTS));
         } else if (is_ready(platform)) {
-            wcscpy(g_status_w, L"Dawn is installed in this folder.");
+            wcscpy(g_status_w, i18n_t(I18N_STATUS_DAWN_INSTALLED));
         } else {
-            wcscpy(g_status_w, L"Downloads go in the folder. Play uses the EXE.");
+            wcscpy(g_status_w, i18n_t(I18N_STATUS_DOWNLOADS_GO));
         }
         icon_draw_label_alpha(
             platform->hdc,
@@ -1354,10 +1670,12 @@ settings_modal_tick(Platform *platform, float dt)
     if (platform->key == PLATFORM_KEY_ESCAPE) {
         if (g_lang_open) {
             g_lang_open = 0;
+        } else if (g_ui_lang_open) {
+            g_ui_lang_open = 0;
         } else {
             settings_modal_close();
         }
-    } else if (platform->key == PLATFORM_KEY_ENTER && !g_lang_open && g_page == SETTINGS_PAGE_INSTALL) {
+    } else if (platform->key == PLATFORM_KEY_ENTER && !g_lang_open && !g_ui_lang_open && g_page == SETTINGS_PAGE_INSTALL) {
         confirm_ok(platform);
     }
     if (g_block_mouse) {
@@ -1370,8 +1688,18 @@ settings_modal_tick(Platform *platform, float dt)
     if (platform->mouse_pressed) {
         if (over_nav >= 0) {
             g_page = over_nav;
+            g_ui_lang_open = 0;
             g_lang_open = 0;
             g_lang_drag = 0;
+        } else if (g_ui_lang_open && app_item >= 0) {
+            i18n_set(app_item == 1 ? I18N_DE : I18N_EN);
+            g_ui_lang_open = 0;
+        } else if (over_ui_lang) {
+            g_ui_lang_open = !g_ui_lang_open;
+            g_lang_open = 0;
+            g_lang_drag = 0;
+        } else if (g_ui_lang_open && !over_ui_menu) {
+            g_ui_lang_open = 0;
         } else if (g_lang_open && over_lang_thumb(&L, mx, my)) {
             g_lang_drag = 1;
             g_lang_drag_y = (float)my;
@@ -1387,6 +1715,7 @@ settings_modal_tick(Platform *platform, float dt)
             g_lang_drag = 0;
         } else if (over_lang) {
             g_lang_open = !g_lang_open;
+            g_ui_lang_open = 0;
             g_lang_drag = 0;
             if (g_lang_open) {
                 const char *cur = platform->install_language ? platform->install_language() : "";

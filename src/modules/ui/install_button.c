@@ -2,6 +2,7 @@
 #include "login_modal.h"
 #include "settings_modal.h"
 #include "modal_skin.h"
+#include "i18n/i18n.h"
 #include "shared/icons.h"
 #include "shared/os.h"
 #include "shared/theme.h"
@@ -14,7 +15,7 @@
 #define BTN_FILL_HOVER 0xf3f5f8
 #define BTN_PROGRESS 0xe4e9f0
 #define BTN_TEXT 0x111827
-#define MENU_W 208.0f
+#define MENU_W 240.0f
 #define MENU_INSET 8.0f
 #define MENU_ITEM_H 30.0f
 #define MENU_ITEM_GAP 4.0f
@@ -274,7 +275,7 @@ secret_tick(Platform *platform, float dt)
         y + (float)modal_px(14, s),
         w - inset * 2.0f - close_s,
         (float)modal_px(20, s),
-        need == 2 ? L"Steam Guard" : (need == 3 ? L"Steam username" : L"Steam password"),
+        need == 2 ? i18n_t(I18N_STEAM_GUARD) : (need == 3 ? i18n_t(I18N_STEAM_USERNAME) : i18n_t(I18N_STEAM_PASSWORD)),
         s,
         1.0f
     );
@@ -285,7 +286,7 @@ secret_tick(Platform *platform, float dt)
         y + (float)modal_px(36, s),
         w - inset * 2.0f,
         (float)modal_px(18, s),
-        need == 2 ? L"Code from the Steam app" : (need == 3 ? L"DepotDownloader account name" : L"Steam password for this download"),
+        need == 2 ? i18n_t(I18N_GUARD_HINT) : (need == 3 ? i18n_t(I18N_USERNAME_HINT) : i18n_t(I18N_PASSWORD_HINT)),
         s,
         1.0f
     );
@@ -295,7 +296,7 @@ secret_tick(Platform *platform, float dt)
         y + (float)modal_px(54, s),
         w - inset * 2.0f,
         (float)modal_px(36, s),
-        need == 2 ? L"Type or paste the Guard code, then continue." : (need == 3 ? L"The username you use to sign in to Steam." : L"Deleted after the download."),
+        need == 2 ? i18n_t(I18N_GUARD_HELP) : (need == 3 ? i18n_t(I18N_USERNAME_HELP) : i18n_t(I18N_PASSWORD_HELP)),
         s,
         1.0f
     );
@@ -306,7 +307,7 @@ secret_tick(Platform *platform, float dt)
         field_w,
         field_h,
         mask[0] ? mask : L"",
-        need == 2 ? L"Guard code" : (need == 3 ? L"Username" : L"Password"),
+        need == 2 ? i18n_t(I18N_GUARD_CODE) : (need == 3 ? i18n_t(I18N_USERNAME) : i18n_t(I18N_PASSWORD)),
         1,
         caret_on,
         1.0f,
@@ -318,7 +319,7 @@ secret_tick(Platform *platform, float dt)
         btn_y,
         btn_w,
         btn_h,
-        L"Continue",
+        i18n_t(I18N_CONTINUE),
         ICON_LOG_IN,
         g_hover_secret,
         1.0f,
@@ -374,10 +375,30 @@ can_pause(Platform *platform)
     return platform && platform->install_can_pause && platform->install_can_pause();
 }
 
+#if APP_DEV
 static int
 can_simulate(Platform *platform)
 {
     return platform && platform->install_can_simulate && platform->install_can_simulate();
+}
+#endif
+
+static int
+is_signed_in(Platform *platform)
+{
+    return platform && platform->steam_signed_in && platform->steam_signed_in();
+}
+
+static const char *
+action_block(Platform *platform)
+{
+    if (!platform) {
+        return "Sign in first";
+    }
+    if (platform->steam_license_block) {
+        return platform->steam_license_block();
+    }
+    return is_signed_in(platform) ? NULL : "Sign in first";
 }
 
 static void
@@ -386,44 +407,44 @@ copy_label(Platform *platform, char *out, int max, IconId *icon)
     int gs = game_state(platform);
 
     if (gs == 2) {
-        snprintf(out, (size_t)max, "Stop");
+        snprintf(out, (size_t)max, "%s", i18n_tu(I18N_STOP));
         *icon = ICON_X;
         return;
     }
     if (gs == 1) {
-        snprintf(out, (size_t)max, "Cancel");
+        snprintf(out, (size_t)max, "%s", i18n_tu(I18N_CANCEL));
         *icon = ICON_X;
         return;
     }
     if (is_paused(platform) && can_pause(platform)) {
-        snprintf(out, (size_t)max, "Resume");
+        snprintf(out, (size_t)max, "%s", i18n_tu(I18N_RESUME));
         *icon = ICON_PLAY;
         return;
     }
     if (is_busy(platform) && can_pause(platform)) {
-        snprintf(out, (size_t)max, "Pause");
+        snprintf(out, (size_t)max, "%s", i18n_tu(I18N_PAUSE));
         *icon = ICON_PAUSE;
         return;
     }
     if (is_busy(platform)) {
-        snprintf(out, (size_t)max, "Cancel");
+        snprintf(out, (size_t)max, "%s", i18n_tu(I18N_CANCEL));
         *icon = ICON_X;
         return;
     }
     if (is_ready(platform)) {
-        snprintf(out, (size_t)max, "Play");
+        snprintf(out, (size_t)max, "%s", i18n_tu(I18N_PLAY));
         *icon = ICON_PLAY;
         return;
     }
     {
         int parts = platform->install_parts ? platform->install_parts() : 0;
         if ((parts & INSTALL_PART_DEPOTS) && !(parts & INSTALL_PART_DAWN)) {
-            snprintf(out, (size_t)max, "Install");
+            snprintf(out, (size_t)max, "%s", i18n_tu(I18N_INSTALL));
             *icon = ICON_DOWNLOAD;
             return;
         }
     }
-    snprintf(out, (size_t)max, "Download");
+    snprintf(out, (size_t)max, "%s", i18n_tu(I18N_DOWNLOAD));
     *icon = ICON_DOWNLOAD;
 }
 
@@ -455,12 +476,12 @@ copy_hint(Platform *platform, char *out, int max, int *shimmer)
         int gs = game_state(platform);
         if (gs == 1) {
             *shimmer = 1;
-            snprintf(out, (size_t)max, "%s", status[0] ? status : "Starting");
+            snprintf(out, (size_t)max, "%s", status[0] ? i18n_status(status) : i18n_tu(I18N_STARTING));
             return;
         }
         if (gs == 2) {
             if (status[0] && !status_is_quiet(status)) {
-                snprintf(out, (size_t)max, "%s", status);
+                snprintf(out, (size_t)max, "%s", i18n_status(status));
             }
             return;
         }
@@ -469,7 +490,7 @@ copy_hint(Platform *platform, char *out, int max, int *shimmer)
         *shimmer = !is_paused(platform);
         progress = platform->install_progress ? platform->install_progress() : 0.0f;
         if (!status[0]) {
-            snprintf(out, (size_t)max, "Working");
+            snprintf(out, (size_t)max, "%s", i18n_tu(I18N_WORKING));
             return;
         }
         if (progress < 0.0f) {
@@ -479,16 +500,23 @@ copy_hint(Platform *platform, char *out, int max, int *shimmer)
             progress = 1.0f;
         }
         if (status[0] && progress > 0.01f && progress < 0.995f && !strchr(status, '%')) {
-            snprintf(out, (size_t)max, "%s · %d%%", status, (int)(progress * 100.0f + 0.5f));
+            snprintf(out, (size_t)max, "%s · %d%%", i18n_status(status), (int)(progress * 100.0f + 0.5f));
         } else if (status[0]) {
-            snprintf(out, (size_t)max, "%s", status);
+            snprintf(out, (size_t)max, "%s", i18n_status(status));
         } else {
-            snprintf(out, (size_t)max, "Working");
+            snprintf(out, (size_t)max, "%s", i18n_tu(I18N_WORKING));
         }
         return;
     }
     if (!status_is_quiet(status)) {
-        snprintf(out, (size_t)max, "%s", status);
+        snprintf(out, (size_t)max, "%s", i18n_status(status));
+        return;
+    }
+    {
+        const char *block = action_block(platform);
+        if (block) {
+            snprintf(out, (size_t)max, "%s", i18n_status(block));
+        }
     }
 }
 
@@ -516,7 +544,7 @@ layout(Platform *platform, InstallLayout *out, const char *label)
         static float measure_px;
         static float measure_tw;
         wchar_t wide[32];
-        const char *use = label && label[0] ? label : "Download";
+        const char *use = label && label[0] ? label : i18n_tu(I18N_DOWNLOAD);
         float tw = 0.0f;
         if (measure_tw > 0.0f && measure_px == out->text_px && strcmp(measure_key, use) == 0) {
             tw = measure_tw;
@@ -588,10 +616,12 @@ layout(Platform *platform, InstallLayout *out, const char *label)
         } else {
             out->show_dawn = (parts & INSTALL_PART_DAWN) != 0;
             out->show_sunrise = (parts & INSTALL_PART_SUNRISE) != 0;
+#if APP_DEV
             if (can_simulate(platform)) {
                 out->show_sim = 1;
                 rows += 1;
             }
+#endif
             if (out->show_dawn) {
                 rows += 1;
             }
@@ -830,6 +860,8 @@ install_button_tick(Platform *platform, float dt)
     int pausable = can_pause(platform);
     int stop = is_game_active(platform);
     int danger = stop || (busy && !pausable);
+    const char *lock_reason = (!busy && !stop) ? action_block(platform) : NULL;
+    int locked = lock_reason != NULL;
     int mx = platform->mouse_x;
     int my = platform->mouse_y;
     int over_main = !blocked && hit(mx, my, L.main_x, L.y, L.main_w, L.h);
@@ -850,7 +882,10 @@ install_button_tick(Platform *platform, float dt)
         g_confirm = 0;
     }
 
-    if (danger) {
+    if (locked) {
+        g_hover_main = approach(g_hover_main, 0.0f, dt);
+        g_hover_caret = approach(g_hover_caret, (over_caret || g_open) ? 1.0f : 0.0f, dt);
+    } else if (danger) {
         g_hover_main = approach(g_hover_main, over_split ? 1.0f : 0.0f, dt);
         g_hover_caret = g_hover_main;
     } else {
@@ -871,7 +906,7 @@ install_button_tick(Platform *platform, float dt)
         g_shimmer = 0.0f;
     }
 
-    uint32_t fg = BTN_TEXT;
+    uint32_t fg = locked ? 0x9aa3b2 : BTN_TEXT;
     if (danger && g_hover_main > 0.02f) {
         fg = modal_mix(BTN_TEXT, 0xe81123, (int)(g_hover_main * 180.0f));
     }
@@ -921,7 +956,16 @@ install_button_tick(Platform *platform, float dt)
     }
 
     icon_round_rect(platform->hdc, L.x, L.y + 1.5f, L.w, L.h, radius, 0x000000, 28);
-    icon_round_rect(platform->hdc, L.x, L.y, L.w, L.h, radius, BTN_FILL, 255);
+    icon_round_rect(
+        platform->hdc,
+        L.x,
+        L.y,
+        L.w,
+        L.h,
+        radius,
+        locked ? modal_mix(BTN_FILL, 0xb8bec8, 70) : BTN_FILL,
+        locked ? 200 : 255
+    );
     {
         float fill_w = L.w * progress;
         if ((busy || paused) && !stop && !danger && fill_w >= radius) {
@@ -1033,8 +1077,9 @@ install_button_tick(Platform *platform, float dt)
             busy || stop,
             0,
             ICON_SEARCH,
-            L"Verify files"
+            i18n_t(I18N_VERIFY_FILES)
         );
+#if APP_DEV
         if (L.show_sim) {
             draw_menu_item(
                 platform,
@@ -1048,9 +1093,10 @@ install_button_tick(Platform *platform, float dt)
                 0,
                 0,
                 ICON_DOWNLOAD,
-                L"Simulate download"
+                i18n_t(I18N_SIMULATE)
             );
         }
+#endif
         if (L.show_dawn) {
             danger_y = L.dawn_y;
         } else if (L.show_sunrise) {
@@ -1082,7 +1128,7 @@ install_button_tick(Platform *platform, float dt)
                 0,
                 1,
                 ICON_X,
-                g_confirm == 1 ? L"Confirm uninstall" : L"Uninstall Dawn"
+                g_confirm == 1 ? i18n_t(I18N_CONFIRM_UNINSTALL) : i18n_t(I18N_UNINSTALL_DAWN)
             );
         }
         if (L.show_sunrise) {
@@ -1098,7 +1144,7 @@ install_button_tick(Platform *platform, float dt)
                 0,
                 1,
                 ICON_X,
-                g_confirm == 2 ? L"Confirm uninstall" : L"Uninstall Sunrise"
+                g_confirm == 2 ? i18n_t(I18N_CONFIRM_UNINSTALL) : i18n_t(I18N_UNINSTALL_SUNRISE)
             );
         }
         if (L.show_full) {
@@ -1114,7 +1160,7 @@ install_button_tick(Platform *platform, float dt)
                 0,
                 1,
                 ICON_X,
-                g_confirm == 3 ? L"Confirm uninstall" : L"Uninstall all"
+                g_confirm == 3 ? i18n_t(I18N_CONFIRM_UNINSTALL) : i18n_t(I18N_UNINSTALL_ALL)
             );
         }
         if (L.show_plain) {
@@ -1131,8 +1177,8 @@ install_button_tick(Platform *platform, float dt)
                 (busy || stop) ? 0 : !can_remove,
                 1,
                 ICON_X,
-                stop ? L"Stop Destiny 2" : (busy ? L"Cancel download" :
-                    (g_confirm == 4 ? L"Confirm uninstall" : L"Uninstall"))
+                stop ? i18n_t(I18N_STOP_D2) : (busy ? i18n_t(I18N_CANCEL_DOWNLOAD) :
+                    (g_confirm == 4 ? i18n_t(I18N_CONFIRM_UNINSTALL) : i18n_t(I18N_UNINSTALL)))
             );
         }
     }
@@ -1155,13 +1201,15 @@ install_button_tick(Platform *platform, float dt)
             if (platform->install_cancel) {
                 platform->install_cancel();
             }
+        } else if (locked) {
+            if (!is_signed_in(platform)) {
+                login_modal_open();
+            }
         } else if (ready) {
             if (platform->install_launch) {
                 platform->install_launch();
             }
-        } else if (can_simulate(platform) && platform->install_simulate) {
-            platform->install_simulate();
-        } else if (!login_modal_signed_in()) {
+        } else if (!is_signed_in(platform)) {
             login_modal_open();
         } else {
             settings_modal_open_for_download();
@@ -1194,13 +1242,16 @@ install_button_tick(Platform *platform, float dt)
     if (over_verify && !busy && !stop) {
         g_open = 0;
         g_confirm = 0;
-        if (!login_modal_signed_in()) {
-            login_modal_open();
+        if (action_block(platform)) {
+            if (!is_signed_in(platform)) {
+                login_modal_open();
+            }
         } else if (platform->install_verify) {
             platform->install_verify();
         }
         return;
     }
+#if APP_DEV
     if (over_sim && !busy && !stop && can_simulate(platform)) {
         g_open = 0;
         g_confirm = 0;
@@ -1209,6 +1260,7 @@ install_button_tick(Platform *platform, float dt)
         }
         return;
     }
+#endif
     if (over_uninstall && stop) {
         g_open = 0;
         g_confirm = 0;

@@ -3,7 +3,10 @@
 
 #include "shared/types.h"
 
-#define APP_API_VERSION 28
+#ifndef APP_DEV
+#define APP_DEV 0
+#endif
+#define APP_API_VERSION 32
 #ifndef INSTALL_PART_DEPOTS
 #define INSTALL_PART_DEPOTS 1
 #define INSTALL_PART_DAWN 2
@@ -115,9 +118,11 @@ typedef struct Platform {
     const char *(*steam_id)(void);
     const char *(*steam_avatar_path)(void);
     const char *(*steam_status)(void);
-    int (*steam_owns_d2)(void);
     int (*steam_owns_forsaken)(void);
     int (*steam_owns_shadowkeep)(void);
+    const char *(*steam_license_block)(void);
+    const char *(*dawn_version)(void);
+    const char *(*dawn_latest)(void);
     int (*update_available)(void);
     const char *(*update_version)(void);
     int (*update_busy)(void);

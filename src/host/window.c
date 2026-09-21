@@ -381,10 +381,12 @@ window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
         return 0;
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
+#if APP_DEV
         if (wparam == VK_F12) {
             debug_console_toggle();
             return 0;
         }
+#endif
         if (window &&
             (GetKeyState(VK_CONTROL) & 0x8000) &&
             !(GetKeyState(VK_MENU) & 0x8000) &&
@@ -408,10 +410,12 @@ window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
         }
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_HOTKEY:
+#if APP_DEV
         if (wparam == 12) {
             debug_console_toggle();
             return 0;
         }
+#endif
         return 0;
     case WM_CLOSE:
         if (window) {
@@ -1033,7 +1037,9 @@ window_create(HostWindow *window, const char *title, int width, int height)
         return 0;
     }
     app_icon_apply_win(window->hwnd, wc.hInstance);
+#if APP_DEV
     RegisterHotKey(window->hwnd, 12, 0, VK_F12);
+#endif
 
     window->hdc = GetDC(window->hwnd);
     window->back_dc = CreateCompatibleDC(window->hdc);
@@ -1082,7 +1088,9 @@ window_destroy(HostWindow *window)
         ReleaseDC(window->hwnd, window->hdc);
     }
     if (window->hwnd) {
+#if APP_DEV
         UnregisterHotKey(window->hwnd, 12);
+#endif
         DestroyWindow(window->hwnd);
     }
     free_cached_fonts();
@@ -1424,9 +1432,11 @@ window_bind_platform(HostWindow *window, Platform *platform, const char *project
     platform->steam_id = steam_auth_id;
     platform->steam_avatar_path = steam_auth_avatar_path;
     platform->steam_status = steam_auth_status;
-    platform->steam_owns_d2 = steam_auth_owns_d2;
     platform->steam_owns_forsaken = steam_auth_owns_forsaken;
     platform->steam_owns_shadowkeep = steam_auth_owns_shadowkeep;
+    platform->steam_license_block = steam_auth_play_block;
+    platform->dawn_version = install_job_dawn_version;
+    platform->dawn_latest = install_job_dawn_latest;
     platform->update_available = self_update_available;
     platform->update_version = self_update_version;
     platform->update_busy = self_update_busy;

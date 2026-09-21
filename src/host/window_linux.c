@@ -880,9 +880,11 @@ window_bind_platform(HostWindow *window, Platform *platform, const char *project
     platform->steam_id = steam_auth_id;
     platform->steam_avatar_path = steam_auth_avatar_path;
     platform->steam_status = steam_auth_status;
-    platform->steam_owns_d2 = steam_auth_owns_d2;
     platform->steam_owns_forsaken = steam_auth_owns_forsaken;
     platform->steam_owns_shadowkeep = steam_auth_owns_shadowkeep;
+    platform->steam_license_block = steam_auth_play_block;
+    platform->dawn_version = install_job_dawn_version;
+    platform->dawn_latest = install_job_dawn_latest;
     platform->update_available = self_update_available;
     platform->update_version = self_update_version;
     platform->update_busy = self_update_busy;

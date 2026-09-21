@@ -554,10 +554,28 @@ icon_draw(void *hdc, IconId id, float cx, float cy, float size, uint32_t rgb, fl
             vg_circle_stroke(ix(&xf, 10.25f), iy(&xf, 10.25f), 5.25f * xf.s, sw, rgb, a);
             vg_line(ix(&xf, 14.8f), iy(&xf, 14.8f), ix(&xf, 19.5f), iy(&xf, 19.5f), sw, rgb, a);
             break;
-        case ICON_SETTINGS:
-            vg_circle_stroke(ix(&xf, 12.0f), iy(&xf, 12.0f), 2.8f * xf.s, sw, rgb, a);
-            vg_circle_stroke(ix(&xf, 12.0f), iy(&xf, 12.0f), 7.6f * xf.s, sw, rgb, a);
+        case ICON_SETTINGS: {
+            VgPt gear[25];
+            const float step = 1.04719755f;
+            const float half = 0.32f;
+            int tooth;
+            for (tooth = 0; tooth < 6; tooth++) {
+                float mid = (float)tooth * step - 1.57079633f;
+                int i = tooth * 4;
+                gear[i + 0].x = ix(&xf, 12.0f + cosf(mid - half) * 6.7f);
+                gear[i + 0].y = iy(&xf, 12.0f + sinf(mid - half) * 6.7f);
+                gear[i + 1].x = ix(&xf, 12.0f + cosf(mid - half) * 10.6f);
+                gear[i + 1].y = iy(&xf, 12.0f + sinf(mid - half) * 10.6f);
+                gear[i + 2].x = ix(&xf, 12.0f + cosf(mid + half) * 10.6f);
+                gear[i + 2].y = iy(&xf, 12.0f + sinf(mid + half) * 10.6f);
+                gear[i + 3].x = ix(&xf, 12.0f + cosf(mid + half) * 6.7f);
+                gear[i + 3].y = iy(&xf, 12.0f + sinf(mid + half) * 6.7f);
+            }
+            gear[24] = gear[0];
+            vg_stroke_poly(gear, 25, sw, rgb, a);
+            vg_circle_stroke(ix(&xf, 12.0f), iy(&xf, 12.0f), 3.0f * xf.s, sw, rgb, a);
             break;
+        }
         case ICON_CHEVRON_DOWN:
             vg_line(ix(&xf, 6.0f), iy(&xf, 9.0f), ix(&xf, 12.0f), iy(&xf, 15.0f), sw, rgb, a);
             vg_line(ix(&xf, 12.0f), iy(&xf, 15.0f), ix(&xf, 18.0f), iy(&xf, 9.0f), sw, rgb, a);
